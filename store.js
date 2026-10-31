@@ -29,6 +29,17 @@ export function emptyState() {
 }
 
 /**
+ * An empty per-session bucket.
+ * `checkedAt` / `checkedTurn` record the last time the agent actually consulted
+ * the box; `misses` counts turns that ended without doing so while unread
+ * items existed.
+ * @returns a fresh bucket.
+ */
+export function emptyBucket() {
+  return { items: [], checkedAt: null, checkedTurn: null, misses: 0, lastMissAt: null };
+}
+
+/**
  * Normalize one stored item, dropping anything unreadable.
  * @param item - whatever the file held.
  * @returns a list with zero or one item.
@@ -61,7 +72,13 @@ export function normalizeState(raw) {
     const items = bucket !== null && typeof bucket === 'object' && Array.isArray(bucket.items) ? bucket.items : [];
     const normalized = [];
     for (const item of items) normalized.push(...normalizeItem(item));
-    next.sessions[sessionId] = { items: normalized };
+    next.sessions[sessionId] = {
+      items: normalized,
+      checkedAt: Number.isFinite(bucket?.checkedAt) ? bucket.checkedAt : null,
+      checkedTurn: typeof bucket?.checkedTurn === 'string' ? bucket.checkedTurn : null,
+      misses: Number.isInteger(bucket?.misses) && bucket.misses > 0 ? bucket.misses : 0,
+      lastMissAt: Number.isFinite(bucket?.lastMissAt) ? bucket.lastMissAt : null,
+    };
   }
   return next;
 }
@@ -100,7 +117,7 @@ export function validateAdd(input) {
 export function addItem(state, options) {
   const { sessionId, payload, now, id } = options;
   if (typeof sessionId !== 'string' || sessionId === '') throw new Error('letterbox: sessionId must be a non-empty string');
-  if (!state.sessions[sessionId]) state.sessions[sessionId] = { items: [] };
+  if (!state.sessions[sessionId]) state.sessions[sessionId] = emptyBucket();
   const item = {
     id,
     text: payload.text,
@@ -179,6 +196,50 @@ export function trimSession(state, sessionId, limit) {
   }
   bucket.items = keep;
   return dropped;
+}
+
+/**
+ * Record that the agent consulted the box during `turn`.
+ * @param state - ledger, mutated in place.
+ * @param options - sessionId, now, turn id.
+ * @returns the updated checkpoint.
+ */
+export function markChecked(state, options) {
+  const { sessionId, now, turn } = options;
+  if (!state.sessions[sessionId]) state.sessions[sessionId] = emptyBucket();
+  const bucket = state.sessions[sessionId];
+  bucket.checkedAt = now;
+  bucket.checkedTurn = turn;
+  return { checkedAt: bucket.checkedAt, checkedTurn: bucket.checkedTurn };
+}
+
+/**
+ * Record a turn that ended without consulting the box while unread items
+ * existed.
+ * @param state - ledger, mutated in place.
+ * @param options - sessionId, now.
+ * @returns how many misses this session has accumulated.
+ */
+export function noteMiss(state, options) {
+  const { sessionId, now } = options;
+  if (!state.sessions[sessionId]) state.sessions[sessionId] = emptyBucket();
+  const bucket = state.sessions[sessionId];
+  bucket.misses += 1;
+  bucket.lastMissAt = now;
+  return bucket.misses;
+}
+
+/**
+ * Whether the agent already checked the box during one turn.
+ * @param state - ledger.
+ * @param sessionId - owning session.
+ * @param turn - the turn id being asked about.
+ * @returns true only when the recorded checkpoint belongs to that turn.
+ */
+export function checkedInTurn(state, sessionId, turn) {
+  const bucket = state.sessions[sessionId];
+  if (!bucket || turn === null || turn === undefined) return false;
+  return bucket.checkedTurn === turn;
 }
 
 /** Public shape handed to tools and the panel. */

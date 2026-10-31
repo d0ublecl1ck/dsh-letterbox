@@ -22,11 +22,14 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   addItem,
+  checkedInTurn,
   countUnread,
   emptyState,
   listItems,
+  markChecked,
   markRead,
   normalizeState,
+  noteMiss,
   trimSession,
   validateAdd,
 } from './store.js';
@@ -57,10 +60,11 @@ function resolveConfig(raw) {
   const source = raw !== null && typeof raw === 'object' ? raw : {};
   const enabled = source.enabled !== false;
   const requireCheckBeforeReply = source.requireCheckBeforeReply !== false;
+  const enforcement = source.enforcement === 'warn' ? 'warn' : 'strict';
   const maxItemsPerSession = Number.isInteger(source.maxItemsPerSession) && source.maxItemsPerSession > 0
     ? source.maxItemsPerSession
     : 200;
-  return { enabled, requireCheckBeforeReply, maxItemsPerSession };
+  return { enabled, requireCheckBeforeReply, enforcement, maxItemsPerSession };
 }
 
 /** Turn the configured policy into the section the model reads every turn. */
@@ -78,6 +82,7 @@ function guidance(config) {
       '- name each unread item explicitly in the answer (short quote plus why it matters), and',
       '- do not assume the human has seen it; do not fold it into "as discussed" or "as you know".',
       'If the human asks something that an unread item already answers, surface that item instead of answering from memory alone.',
+      '- If a turn ends with unread items and you never called `letterbox_status`, the host records a miss and the panel shows it to the human.',
     );
   } else {
     lines.push('', 'Check `letterbox_status` when a turn depends on what the human already knows.');
@@ -174,11 +179,26 @@ export function apply(rawCtx, rawConfig) {
     return typeof id === 'string' && id !== '' ? id : null;
   }
 
+  /** Turn bookkeeping: the host, not the model, decides what "this turn" means. */
+  const turns = new Map();
+
+  function currentTurnOf(sessionId) {
+    const record = turns.get(sessionId);
+    return record ? record.id : null;
+  }
+
   function snapshotFor(sessionId) {
+    const bucket = state.sessions[sessionId];
+    const turn = currentTurnOf(sessionId);
     return {
       sessionId,
       unreadCount: countUnread(state, sessionId),
       items: listItems(state, sessionId),
+      checkedAt: bucket?.checkedAt ?? null,
+      checkedTurn: bucket?.checkedTurn ?? null,
+      checkedThisTurn: checkedInTurn(state, sessionId, turn),
+      misses: bucket?.misses ?? 0,
+      lastMissAt: bucket?.lastMissAt ?? null,
     };
   }
 
@@ -258,16 +278,63 @@ export function apply(rawCtx, rawConfig) {
       const sessionId = sessionIdOf(exec);
       if (sessionId === null) throw new Error('letterbox_status: no calling session');
       await ready;
+      const checkpoint = markChecked(state, { sessionId, now: Date.now(), turn: currentTurnOf(sessionId) });
+      schedulePersist();
       const unread = listItems(state, sessionId, { unreadOnly: true });
-      if (unread.length === 0) return 'unread: 0 — the human has acknowledged every filed note.';
-      return 'unread: ' + unread.length + '\n' + unread.map(renderItem).join('\n');
+      const stamp = 'checkpoint: recorded at ' + new Date(checkpoint.checkedAt).toISOString() + ' (turn ' + String(checkpoint.checkedTurn) + ')';
+      if (unread.length === 0) return 'unread: 0 — the human has acknowledged every filed note.\n' + stamp;
+      return 'unread: ' + unread.length + '\n' + unread.map(renderItem).join('\n') + '\n' + stamp;
     },
   });
 
+  // ── turn bookkeeping and the miss gate ────────────────────────────────
+  // The host owns "this turn": a turn id is minted on turn/start, and turn/end
+  // checks whether letterbox_status ran while it was open. Only a completed
+  // turn can miss: an interrupted one never reached the human.
+  ctx.on('session/event', (session, event) => {
+    const id = session?.id;
+    if (typeof id !== 'string' || id === '' || event === null || typeof event !== 'object') return;
+    if (event.type === 'turn/start') {
+      const previous = turns.get(id);
+      const seq = (previous?.seq ?? 0) + 1;
+      turns.set(id, { id: id + '#' + seq, seq });
+      return;
+    }
+    if (event.type !== 'turn/end') return;
+    if (config.enforcement !== 'strict') return;
+    if (event.data?.reason?.kind !== 'completed') return;
+    whenLoaded(() => {
+      const turn = currentTurnOf(id);
+      if (turn === null) return;
+      if (countUnread(state, id) === 0) return;
+      if (checkedInTurn(state, id, turn)) return;
+      const misses = noteMiss(state, { sessionId: id, now: Date.now() });
+      schedulePersist();
+      warn('letterbox: turn ' + turn + ' ended with unread items and no letterbox_status call (miss #' + misses + ')');
+      try {
+        ctx.emit?.('letterbox/miss', { sessionId: id, turn, misses });
+      } catch {
+        /* the event is advisory; a listener must never break the turn */
+      }
+    });
+  });
+
   // ── browser route ─────────────────────────────────────────────────────
-  const webServer = ctx.get('webServer');
-  const connection = ctx.get('connection');
-  if (webServer !== undefined && typeof webServer.register === 'function') {
+  // The route must not be gated on a one-shot `ctx.get('webServer')`. That read
+  // is strict: it only returns an implementation whose providing fiber is
+  // already ACTIVE. A cold boot can reach this plugin while the web server is
+  // still loading, so the read came back undefined, the whole registration
+  // branch was skipped, and nothing ever retried it - the route then stayed
+  // missing for the life of the process. A scoped inject is the retrying form
+  // of the same read: the callback runs as soon as the service is available
+  // (and again if it is replaced), which is how the web server's own
+  // dependents mount their routes.
+  //
+  // `webServer` stays out of the module-level `inject` on purpose: a profile
+  // without a web server (acp) must still activate the tools and the prompt.
+  function mountRoute(scoped) {
+    const webServer = scoped.get('webServer');
+    if (webServer === undefined || typeof webServer.register !== 'function') return;
     const sendJson = (res, status, value) => {
       res.statusCode = status;
       res.setHeader('content-type', 'application/json');
@@ -284,16 +351,21 @@ export function apply(rawCtx, rawConfig) {
         }
       });
     });
-    ctx.effect(() => webServer.register({
+    // `connection` is read per request, not captured while mounting: it may be
+    // absent here (it is optional) and arrive later, and a fence resolved from
+    // a stale capture would silently admit every request.
+    const rejected = (req, res) => {
+      const rejection = scoped.get('connection')?.requestRejection?.(req);
+      if (rejection === undefined) return false;
+      res.statusCode = rejection;
+      res.end();
+      return true;
+    };
+    scoped.effect(() => webServer.register({
       kind: 'prefix',
       path: ROUTE_PATH,
       handler: async (req, res) => {
-        const rejection = connection?.requestRejection?.(req);
-        if (rejection !== undefined) {
-          res.statusCode = rejection;
-          res.end();
-          return;
-        }
+        if (rejected(req, res)) return;
         if (req.method !== 'POST') {
           res.statusCode = 405;
           res.setHeader('allow', 'POST');
@@ -327,6 +399,10 @@ export function apply(rawCtx, rawConfig) {
       },
     }), 'letterbox: POST ' + ROUTE_PATH + '/<endpoint>');
   }
+
+  // Scoped, not module-level: this fiber waits for the web server to appear and
+  // is unloaded with its effects (the route unregisters) when this plugin goes.
+  ctx.inject(['webServer'], mountRoute);
 
   ctx.effect(() => () => {
     if (persistTimer !== null) clearTimeout(persistTimer);

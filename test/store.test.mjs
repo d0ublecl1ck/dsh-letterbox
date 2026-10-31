@@ -1,10 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  checkedInTurn,
   countUnread,
+  emptyBucket,
   emptyState,
   listItems,
+  markChecked,
   markRead,
+  noteMiss,
   normalizeState,
   trimSession,
   validateAdd,
@@ -111,6 +115,38 @@ test('normalizeState survives a non-object file', () => {
   assert.deepEqual(normalizeState(null), emptyState());
   assert.deepEqual(normalizeState('x'), emptyState());
   assert.deepEqual(normalizeState({ sessions: [] }), emptyState());
+});
+
+test('emptyBucket starts with no checkpoint and no misses', () => {
+  assert.deepEqual(emptyBucket(), { items: [], checkedAt: null, checkedTurn: null, misses: 0, lastMissAt: null });
+});
+
+test('markChecked records the turn and is answerable per turn', () => {
+  const state = emptyState();
+  markChecked(state, { sessionId: 's1', now: 9000, turn: 's1#3' });
+  assert.equal(checkedInTurn(state, 's1', 's1#3'), true);
+  assert.equal(checkedInTurn(state, 's1', 's1#4'), false);
+  assert.equal(checkedInTurn(state, 's1', null), false);
+  assert.equal(checkedInTurn(state, 'other', 's1#3'), false);
+  assert.equal(state.sessions.s1.checkedAt, 9000);
+});
+
+test('noteMiss counts misses and stamps the latest one', () => {
+  const state = emptyState();
+  assert.equal(noteMiss(state, { sessionId: 's1', now: 100 }), 1);
+  assert.equal(noteMiss(state, { sessionId: 's1', now: 200 }), 2);
+  assert.equal(state.sessions.s1.lastMissAt, 200);
+});
+
+test('normalizeState preserves checkpoint fields and rejects junk ones', () => {
+  const normalized = normalizeState({
+    sessions: {
+      s1: { items: [], checkedAt: 1234, checkedTurn: 's1#2', misses: 3, lastMissAt: 5678 },
+      s2: { items: [], checkedAt: 'soon', checkedTurn: 7, misses: -2, lastMissAt: null },
+    },
+  });
+  assert.deepEqual(normalized.sessions.s1, { items: [], checkedAt: 1234, checkedTurn: 's1#2', misses: 3, lastMissAt: 5678 });
+  assert.deepEqual(normalized.sessions.s2, { items: [], checkedAt: null, checkedTurn: null, misses: 0, lastMissAt: null });
 });
 
 test('trimSession drops read items first, then the oldest', () => {

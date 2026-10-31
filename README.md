@@ -34,6 +34,8 @@ Agent 侧（模型可见的三个工具）：
 
 人这一侧：输入框上方的收件箱栏显示未读数，展开后逐条点「已读」。已读之后条目不会消失，只是从「未读」里移除。
 
+空箱时这一栏同样在：显示「收件箱 · 空」，点开只有一行「还没有需要你看的条目」，入口不会消失。
+
 ## 数据在哪
 
 `$DSH_HOME/letterbox.json`，按 `sessionId` 分区。写入是「临时文件 + rename」，重启不丢。
@@ -54,7 +56,14 @@ Agent 侧（模型可见的三个工具）：
 | --- | --- | --- |
 | `enabled` | `true` | 关掉后不注册工具、不注入提示词 |
 | `requireCheckBeforeReply` | `true` | 提示词里要求回话前必须查一次未读 |
+| `enforcement` | `strict` | `strict` 时宿主在 turn/end 记账：有未读却没调用 `letterbox_status` 的回合记一次 miss；`warn` 只提示不记账 |
 | `maxItemsPerSession` | `200` | 单会话上限，超出时先丢最旧的已读条目 |
+
+### 核对（checkpoint）与漏检记账
+
+- `letterbox_status` 不只是查询：它会把「本轮查过了」写进会话账本（`checkedAt` / `checkedTurn`），客户端据此显示「上次核对 HH:MM」。
+- 每个 `turn/start` 由宿主生成一个 turn id；`turn/end` 若是正常完成、仍有未读、且本轮没查过，就记一次 miss（`misses` 累加），面板显示「Agent 漏核对 N 轮」。
+- 这是宿主侧事实，不依赖模型自述；中断/取消的回合不计 miss。
 
 ## 边界
 

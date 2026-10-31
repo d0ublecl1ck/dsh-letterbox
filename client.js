@@ -101,6 +101,7 @@ window.__ModuleLoader__.load({
       item: { display: 'flex', gap: 8, alignItems: 'flex-start', padding: '6px 8px', borderRadius: 6, background: 'var(--dsw-alias-bg-secondary, rgba(127,127,127,0.08))' },
       text: { flex: 1, whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.45 },
       meta: { opacity: 0.65, fontSize: 11 },
+      warn: { color: 'var(--dsw-alias-text-warning, #b26a00)', fontSize: 11 },
       badge: { fontSize: 11, padding: '0 6px', borderRadius: 999, background: 'var(--dsw-alias-bg-tertiary, rgba(127,127,127,0.18))' },
       read: { fontSize: 12, padding: '2px 10px', borderRadius: 6, border: '1px solid var(--dsw-alias-border-secondary, rgba(127,127,127,0.35))', background: 'transparent', cursor: 'pointer' },
       readDone: { fontSize: 12, padding: '2px 10px', borderRadius: 6, border: 'none', background: 'transparent', opacity: 0.55, cursor: 'default' },
@@ -118,9 +119,15 @@ window.__ModuleLoader__.load({
       const ledger = useLedger(sessionId);
       const [open, setOpen] = React.useState(false);
       if (sessionId === null) return null;
-      if (!ledger.loaded && ledger.items.length === 0) return null;
-      if (ledger.items.length === 0 && ledger.error === null) return null;
+      // The dock is the only door into the letterbox, so an empty box still
+      // draws the same one-line row. Hiding it made the entry itself vanish
+      // exactly when the human most needed to learn the box exists. The row is
+      // one line with one height in every state, so the composer never shifts
+      // as items arrive or are read.
       const unread = ledger.unreadCount;
+      const label = ledger.items.length > 0
+        ? (unread > 0 ? '收件箱 · ' + unread + ' 条未读' : '收件箱 · 全部已读')
+        : (ledger.loaded ? '收件箱 · 空' : '收件箱');
       return h('div', { style: styles.wrap },
         h('div', {
           style: styles.bar,
@@ -130,21 +137,29 @@ window.__ModuleLoader__.load({
           onKeyDown: (event) => { if (event.key === 'Enter' || event.key === ' ') setOpen((value) => !value); },
         },
           h('span', { 'aria-hidden': true }, '📬'),
-          h('span', { style: styles.count }, unread > 0 ? '收件箱 · ' + unread + ' 条未读' : '收件箱 · 全部已读'),
+          h('span', { style: styles.count }, label),
+          ledger.checkedAt
+            ? h('span', { style: styles.meta }, '上次核对 ' + new Date(ledger.checkedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }))
+            : null,
+          unread > 0 && ledger.misses > 0
+            ? h('span', { style: styles.warn, title: 'Agent 有 ' + ledger.misses + ' 轮结束前没有核对收件箱' }, '· Agent 漏核对 ' + ledger.misses + ' 轮')
+            : null,
           h('span', { style: styles.meta }, open ? '收起' : '展开'),
           ledger.error !== null ? h('span', { style: styles.meta, title: ledger.error }, '（连接异常）') : null,
         ),
         open ? h('div', { style: styles.list },
-          ledger.items.map((item) => h('div', { key: item.id, style: styles.item },
-            h('span', { style: styles.badge }, kindLabel(item.kind) + (item.priority === 'high' ? '!' : '')),
-            h('div', { style: styles.text },
-              item.text,
-              item.source ? h('div', { style: styles.meta }, '来自 ' + item.source) : null,
-            ),
-            item.read
-              ? h('button', { type: 'button', style: styles.readDone, disabled: true }, '已读')
-              : h('button', { type: 'button', style: styles.read, onClick: () => void ledger.markRead(item.id) }, '已读'),
-          )),
+          ledger.items.length === 0
+            ? h('div', { style: styles.meta }, ledger.loaded ? '还没有需要你看的条目' : '读取中…')
+            : ledger.items.map((item) => h('div', { key: item.id, style: styles.item },
+              h('span', { style: styles.badge }, kindLabel(item.kind) + (item.priority === 'high' ? '!' : '')),
+              h('div', { style: styles.text },
+                item.text,
+                item.source ? h('div', { style: styles.meta }, '来自 ' + item.source) : null,
+              ),
+              item.read
+                ? h('button', { type: 'button', style: styles.readDone, disabled: true }, '已读')
+                : h('button', { type: 'button', style: styles.read, onClick: () => void ledger.markRead(item.id) }, '已读'),
+            )),
         ) : null,
       );
     }
