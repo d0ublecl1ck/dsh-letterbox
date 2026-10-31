@@ -1,0 +1,49 @@
+{
+  "name": "dsh-letterbox",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "会话级收件箱：Agent 把必须让你知道的信息投进收件箱，只有你点「已读」才算读过；Agent 在回话前先查未读回执，不再假设你已经知道。",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./store": "./store.js"
+  },
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "client.js",
+    "store.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "lint:store": "node --check store.js && node --check index.js && node --check client.js"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "letterbox",
+    "inbox",
+    "read-receipt",
+    "attention",
+    "subagent",
+    "session"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    }
+  }
+}

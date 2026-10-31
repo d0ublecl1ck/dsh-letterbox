@@ -1,0 +1,6 @@
+# FREAK
+
+- [ ] `index.js` 提示词段的 `order` 依赖 `getSectionOrder("TOOL_SESSION_QUERY")` 这一常量；升级 dsh 时先核对 `SECTION_ORDERS` 是否仍含该键，否则 G5 会以「order must be a finite number」失败。记录：2026-10-31
+- [ ] `client.js` 的 `ctx.get("sessions").list` 与 `conversation.composer.dock` slot 尚未做浏览器验证；下次改客户端时先在真实页面确认栏位出现、已读按钮生效。记录：2026-10-31
+- [ ] `$DSH_HOME/letterbox.json` 的 schema（version=1、sessions[sessionId].items[]）一旦变更必须写迁移；当前 normalizeState 会丢弃读不懂的条目，不报错。记录：2026-10-31
+- [ ] 本机 dsh-purge 禁用了 hooks-claude-code 的 Stop steer（源码标注 `[dsh-purge] Stop hook steer disabled`），所以「未核对不许结束回合」不能靠外部 Stop hook；只能由插件自己在 turn 边界记账。记录：2026-10-31

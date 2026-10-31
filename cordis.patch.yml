@@ -1,0 +1,5 @@
+# A bundle layer: applied in dsh.profile.bundles order, overridden by id
+# from later bundle layers and from the profile/user patch files.
+- insert:
+    - id: letterbox
+      name: "dsh-letterbox"
