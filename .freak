@@ -5,5 +5,6 @@
 - [ ] `client.js` 的 `plugins/??dsh-letterbox/client.js` 响应体每次请求都从磁盘现读（`chunkResponse` 里 `readFile(clientPath)`），rev 由 `mtime/ctime/size` 哈希算出，所以改完客户端只需重载窗口，不必重装或重启；但浏览器按 `immutable` 缓存，rev 不变就会命中旧 URL，改完先确认 boot HTML 里的 rev 变了再让人重载。记录：2026-10-31
 - [ ] `client.js` 的 `ctx.get("sessions").list` 与 `conversation.composer.dock` slot 尚未做浏览器验证；下次改客户端时先在真实页面确认栏位出现、已读按钮生效。记录：2026-10-31
 - [ ] `$DSH_HOME/letterbox.json` 的 schema（version=1、sessions[sessionId].items[]）一旦变更必须写迁移；当前 normalizeState 会丢弃读不懂的条目，不报错。记录：2026-10-31
-- [ ] 本机 dsh-purge 禁用了 hooks-claude-code 的 Stop steer（源码标注 `[dsh-purge] Stop hook steer disabled`），所以「未核对不许结束回合」不能靠外部 Stop hook；当前实现是 turn/end 记账（miss），不是硬拦截，若将来要真「强制继续」，需要 `agent/turn-stopping` + 一个合规的 UserMessage 工厂。记录：2026-10-31
+- [ ] 本机 dsh-purge 禁用了 hooks-claude-code 的 Stop steer（源码标注 `[dsh-purge] Stop hook steer disabled`），所以「未核对不许结束回合」不能靠外部 Stop hook；当前实现是 turn/end 记账（miss），不是硬拦截——只在「有未读且本轮没调用 `letterbox_status`」时记一次，若将来要真「强制继续」，需要 `agent/turn-stopping` + 一个合规的 UserMessage 工厂。记录：2026-10-31
+- [ ] 提示词口径必须与 miss 记账口径同步：现在两边都是「有未读才查/才记」，`requireCheckBeforeReply: false` 也一致；但曾短暂改成「每轮都必须查」的无条件口径，若将来再改回无条件记账，必须同时改 duty 1，否则会出现「没被要求查、却被记漏」。记录：2026-10-31
 - [ ] `letterbox_status` 的 checkpoint 写入依赖 `session/event` 的 turn/start 序号；若宿主把 turn 事件改成别的名字，miss 会静默不记（不影响工具本身）。下次升级 dsh 时先核对事件名。记录：2026-10-31

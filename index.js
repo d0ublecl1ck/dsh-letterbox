@@ -25,11 +25,13 @@ import {
   checkedInTurn,
   countUnread,
   emptyState,
+  GLOBAL_SCOPE,
   listItems,
   markChecked,
   markRead,
   normalizeState,
   noteMiss,
+  pageItems,
   trimSession,
   validateAdd,
 } from './store.js';
@@ -72,25 +74,25 @@ function guidance(config) {
   const lines = [
     '# Letterbox (session inbox)',
     '',
-    'This Session has a letterbox: a list of notes the agent decided the human must see.',
-    'A note is only "read" when the human clicks its 已读 button in the panel. Nothing else counts as read - not sending it, not mentioning it in a message.',
-  ];
-  if (config.requireCheckBeforeReply) {
-    lines.push(
-      '',
-      'Before each final answer, call `letterbox_status`. If it reports unread items:',
-      '- name each unread item explicitly in the answer (short quote plus why it matters), and',
-      '- do not assume the human has seen it; do not fold it into "as discussed" or "as you know".',
-      'If the human asks something that an unread item already answers, surface that item instead of answering from memory alone.',
-      '- If a turn ends with unread items and you never called `letterbox_status`, the host records a miss and the panel shows it to the human.',
-    );
-  } else {
-    lines.push('', 'Check `letterbox_status` when a turn depends on what the human already knows.');
-  }
-  lines.push(
+    'This Session has a letterbox: the only channel where the human records that they actually read something. A note counts as read only when the human clicks its 已读 button in the panel. Nothing else counts as read - not sending it, not mentioning it in a message.',
     '',
-    'Write a note with `letterbox_add` when you learn something the human must act on or must not miss: a risk you found, a decision they own, a handoff they need to accept. Do not file routine progress; that belongs in the answer, not the letterbox.',
-    'Keep one note per distinct fact. Reuse `letterbox_list` before adding, so the box does not fill with near-duplicates.',
+    'You have three tools: `letterbox_add`, `letterbox_list`, `letterbox_status`.',
+    '',
+    '## Every turn, two duties',
+  ];
+  lines.push(config.requireCheckBeforeReply
+    ? '1. The host injects one `Letterbox:` receipt line into every turn - read it. If it reports unacknowledged notes, call `letterbox_status` before your final answer and name each one explicitly; a completed turn that ends with unacknowledged notes and no such call records a miss the human can see. If it reports that the human has acknowledged every filed note, or that nothing has been filed yet, do not call `letterbox_status` this turn.'
+    : '1. The host injects one `Letterbox:` receipt line into every turn - read it. Call `letterbox_status` before your final answer when it reports unacknowledged notes.');
+  lines.push(
+    '2. Whenever you learn something the human must know - a risk, a decision only they can make, a handoff they must accept, a constraint that changes their plan - file it with `letterbox_add` before you reply. Do not rely on prose alone: a fact buried in a long answer is exactly what gets missed.',
+    'File it as a session note by default. Use `scope: "global"` only when the human asked for it, or the fact is a standing preference / cross-session rule rather than something tied to this task.',
+    '',
+    '## Reading the receipt',
+    '- `N unacknowledged note(s)`: N notes are still unread. Call `letterbox_status` and name each one explicitly in your answer (short quote plus why it matters). Never assume the human saw it.',
+    '- `the human has acknowledged all N filed note(s)`: they have read every note. Treat those notes as shared ground - speak from them, do not re-explain what they already acknowledged, do not hedge with "as I mentioned", and do not ask whether they saw it.',
+    '- `nothing has been filed`: the box is empty. File what the human must know with `letterbox_add`.',
+    '- If the human asks something an unacknowledged note already answers, surface that note instead of answering from memory.',
+    '- One note per distinct fact. Call `letterbox_list` before adding, so the box does not fill with near-duplicates.',
   );
   return lines.join('\n');
 }
@@ -99,7 +101,8 @@ function guidance(config) {
 function renderItem(item) {
   const badge = item.read ? 'read' : 'UNREAD';
   const priority = item.priority === 'high' ? '!' : ' ';
-  return '- [' + badge + ']' + priority + ' (' + item.kind + ') ' + item.text + (item.source ? ' — from ' + item.source : '');
+  const scope = item.scope === 'global' ? ' [global]' : '';
+  return '- [' + badge + ']' + priority + ' (' + item.kind + ')' + scope + ' ' + item.text + (item.source ? ' — from ' + item.source : '');
 }
 
 /**
@@ -187,18 +190,48 @@ export function apply(rawCtx, rawConfig) {
     return record ? record.id : null;
   }
 
-  function snapshotFor(sessionId) {
-    const bucket = state.sessions[sessionId];
-    const turn = currentTurnOf(sessionId);
+  /** The bucket a panel request addresses: this session's own, or the shared one. */
+  function bucketIdOf(sessionId, bucket) {
+    return bucket === 'global' ? GLOBAL_SCOPE : sessionId;
+  }
+
+  /**
+   * The receipt half of a snapshot: everything that is not the item list.
+   *
+   * `unreadCount` describes the bucket being viewed while `globalUnreadCount`
+   * always describes the shared box, so the panel can badge either view. The
+   * checkpoint fields stay session-scoped: misses are a property of the
+   * conversation, never of the global box.
+   */
+  function receiptFor(scopeId, sessionId) {
+    const sessionBucket = state.sessions[sessionId];
     return {
       sessionId,
-      unreadCount: countUnread(state, sessionId),
-      items: listItems(state, sessionId),
-      checkedAt: bucket?.checkedAt ?? null,
-      checkedTurn: bucket?.checkedTurn ?? null,
-      checkedThisTurn: checkedInTurn(state, sessionId, turn),
-      misses: bucket?.misses ?? 0,
-      lastMissAt: bucket?.lastMissAt ?? null,
+      bucket: scopeId === GLOBAL_SCOPE ? 'global' : 'session',
+      unreadCount: countUnread(state, scopeId),
+      globalUnreadCount: countUnread(state, GLOBAL_SCOPE),
+      checkedAt: sessionBucket?.checkedAt ?? null,
+      checkedTurn: sessionBucket?.checkedTurn ?? null,
+      checkedThisTurn: checkedInTurn(state, sessionId, currentTurnOf(sessionId)),
+      misses: sessionBucket?.misses ?? 0,
+      lastMissAt: sessionBucket?.lastMissAt ?? null,
+    };
+  }
+
+  function snapshotFor(scopeId, view = {}, sessionId = scopeId) {
+    return { ...receiptFor(scopeId, sessionId), items: listItems(state, scopeId, view) };
+  }
+
+  /** One page plus the receipt fields; `total`/`hasMore` describe the whole set. */
+  function pagedSnapshotFor(scopeId, view, sessionId = scopeId) {
+    const page = pageItems(state, scopeId, view);
+    return {
+      ...receiptFor(scopeId, sessionId),
+      items: page.items,
+      total: page.total,
+      offset: page.offset,
+      limit: page.limit,
+      hasMore: page.hasMore,
     };
   }
 
@@ -223,6 +256,11 @@ export function apply(rawCtx, rawConfig) {
         kind: { type: 'string', enum: ['risk', 'note', 'decision', 'handoff'], description: 'risk = something that can bite later; decision = a choice only the human can make.' },
         priority: { type: 'string', enum: ['high', 'normal'], description: 'high is rendered with a warning tone.' },
         source: { type: 'string', description: 'Optional origin label, e.g. a subagent name or a file path.' },
+        scope: {
+          type: 'string',
+          enum: ['session', 'global'],
+          description: 'Where the note lives. session (default) = this conversation only. global = shared across every Session; use it only when the human asked for it, or the fact is a standing preference / cross-session rule rather than something tied to the current task.',
+        },
       },
       required: ['text'],
     },
@@ -234,11 +272,14 @@ export function apply(rawCtx, rawConfig) {
       const sessionId = sessionIdOf(exec);
       if (sessionId === null) throw new Error('letterbox_add: no calling session');
       const payload = validateAdd(args);
+      const scope = payload.scope === 'global' ? 'global' : 'session';
+      const scopeId = bucketIdOf(sessionId, scope);
       await ready;
-      const item = addItem(state, { sessionId, payload, now: Date.now(), id: 'lb_' + randomUUID() });
-      trimSession(state, sessionId, config.maxItemsPerSession);
+      const item = addItem(state, { sessionId, payload, now: Date.now(), id: 'lb_' + randomUUID(), scope });
+      trimSession(state, scopeId, config.maxItemsPerSession);
       schedulePersist();
-      return 'filed ' + item.id + ' (' + countUnread(state, sessionId) + ' unread in this session)';
+      const where = scope === 'global' ? 'the global box' : 'this session';
+      return 'filed ' + item.id + ' (' + scope + ', ' + countUnread(state, scopeId) + ' unread in ' + where + ')';
     },
   });
 
@@ -281,16 +322,41 @@ export function apply(rawCtx, rawConfig) {
       const checkpoint = markChecked(state, { sessionId, now: Date.now(), turn: currentTurnOf(sessionId) });
       schedulePersist();
       const unread = listItems(state, sessionId, { unreadOnly: true });
+      const globalUnread = listItems(state, GLOBAL_SCOPE, { unreadOnly: true });
+      const filed = listItems(state, sessionId);
+      const globalFiled = listItems(state, GLOBAL_SCOPE);
       const stamp = 'checkpoint: recorded at ' + new Date(checkpoint.checkedAt).toISOString() + ' (turn ' + String(checkpoint.checkedTurn) + ')';
-      if (unread.length === 0) return 'unread: 0 — the human has acknowledged every filed note.\n' + stamp;
-      return 'unread: ' + unread.length + '\n' + unread.map(renderItem).join('\n') + '\n' + stamp;
+      // The header always names the bucket: two boxes with one "unread" number
+      // was exactly the ambiguity this change removes.
+      const head = 'unread: ' + unread.length + ' (session)'
+        + (globalUnread.length > 0 ? ' · global: ' + globalUnread.length : '');
+      const body = [];
+      if (unread.length === 0) {
+        // An empty session receipt means two different things, and the human's
+        // intent depends on which: "nothing was ever filed" is not "everything
+        // you filed has been acknowledged, so stop explaining what I read".
+        body.push(filed.length === 0
+          ? 'nothing has been filed in this session yet.'
+          : 'all ' + filed.length + ' filed session note(s) are acknowledged; treat them as shared ground.');
+      } else {
+        for (const item of unread) body.push(renderItem(item));
+      }
+      if (globalUnread.length > 0) {
+        body.push('global unread:');
+        for (const item of globalUnread) body.push(renderItem(item));
+      } else if (globalFiled.length > 0) {
+        body.push('global: all ' + globalFiled.length + ' note(s) acknowledged; treat them as shared ground.');
+      }
+      return head + '\n' + body.join('\n') + '\n' + stamp;
     },
   });
 
   // ── turn bookkeeping and the miss gate ────────────────────────────────
   // The host owns "this turn": a turn id is minted on turn/start, and turn/end
-  // checks whether letterbox_status ran while it was open. Only a completed
-  // turn can miss: an interrupted one never reached the human.
+  // checks whether letterbox_status ran while it was open. A miss is only owed
+  // when something was actually left unacknowledged - with an empty receipt the
+  // agent is told not to check, so charging it for not checking would be a lie.
+  // Only a completed turn can miss: an interrupted one never reached the human.
   ctx.on('session/event', (session, event) => {
     const id = session?.id;
     if (typeof id !== 'string' || id === '' || event === null || typeof event !== 'object') return;
@@ -310,13 +376,76 @@ export function apply(rawCtx, rawConfig) {
       if (checkedInTurn(state, id, turn)) return;
       const misses = noteMiss(state, { sessionId: id, now: Date.now() });
       schedulePersist();
-      warn('letterbox: turn ' + turn + ' ended with unread items and no letterbox_status call (miss #' + misses + ')');
+      warn('letterbox: turn ' + turn + ' ended with unacknowledged notes and no letterbox_status call (miss #' + misses + ')');
       try {
         ctx.emit?.('letterbox/miss', { sessionId: id, turn, misses });
       } catch {
         /* the event is advisory; a listener must never break the turn */
       }
     });
+  });
+
+  // ── per-Agent receipt line ────────────────────────────────────────────
+  // The agent must know the box's state without asking for it: "everything is
+  // acknowledged, do not check this turn" is a fact only the host can assert,
+  // and silence is exactly how a stale assumption survives. One line is pushed
+  // into every turn of every live Agent through that Agent's own prompt scope,
+  // and its `text` is a thunk: the prompt is assembled per turn, so the line
+  // always describes the ledger as it is right now, not as it was at install.
+  function receiptLine(sessionId) {
+    // Before hydration the ledger is unknown; an empty contribution is dropped
+    // by the prompt renderer, which beats claiming either state and being wrong.
+    if (!hydrated) return '';
+    const unread = countUnread(state, sessionId);
+    const globalUnread = countUnread(state, GLOBAL_SCOPE);
+    if (unread > 0) {
+      return 'Letterbox: ' + unread + ' unacknowledged note(s) in this Session'
+        + (globalUnread > 0 ? ' (plus ' + globalUnread + ' unacknowledged in the global box)' : '')
+        + '. Call letterbox_status before your final answer and name each one explicitly.';
+    }
+    if (globalUnread > 0) {
+      // A global-only backlog never charges a miss - misses count session notes -
+      // but staying silent would let the agent claim there is nothing to know.
+      return 'Letterbox: this Session has nothing unacknowledged, but the global box has ' + globalUnread + ' unacknowledged note(s). You do not need to check the box this turn - mention them only if they matter here.';
+    }
+    const filed = listItems(state, sessionId).length;
+    if (filed === 0) {
+      return 'Letterbox: nothing has been filed in this Session yet. File anything the human must know with letterbox_add.';
+    }
+    return 'Letterbox: the human has acknowledged all ' + filed + ' filed note(s) in this Session. You do not need to check the box this turn; treat those notes as shared ground - do not re-explain them and do not ask whether they were seen.';
+  }
+
+  ctx.inject(['agents'], (scoped) => {
+    const installed = new Map();
+    const install = (agent) => {
+      if (installed.has(agent)) return;
+      const sessionId = agent?.session?.id;
+      const systemPrompt = agent?.ctx?.systemPrompt;
+      if (typeof sessionId !== 'string' || sessionId === '' || typeof systemPrompt?.context !== 'function') return;
+      // A context entry belongs to the Agent's scope, so it is registered
+      // through that Agent's own ctx; the placement sits right after the
+      // delegation block, before the harness-source context.
+      const base = systemPrompt.getContextOrder?.('SUBAGENT_DELEGATION');
+      installed.set(agent, systemPrompt.context({
+        name: 'letterbox:receipt',
+        order: Number.isFinite(base) ? base + 1 : 121,
+        required: true,
+        text: () => receiptLine(sessionId),
+      }));
+    };
+    const release = (agent) => {
+      const dispose = installed.get(agent);
+      if (dispose === undefined) return;
+      installed.delete(agent);
+      dispose();
+    };
+    for (const agent of scoped.agents.list()) install(agent);
+    scoped.on('agent/created', ({ agent }) => { install(agent); });
+    scoped.on('agent/disposed', ({ agent }) => { release(agent); });
+    scoped.effect(() => () => {
+      for (const dispose of installed.values()) dispose();
+      installed.clear();
+    }, 'letterbox: receipt lines');
   });
 
   // ── browser route ─────────────────────────────────────────────────────
@@ -382,7 +511,25 @@ export function apply(rawCtx, rawConfig) {
         }
         await ready;
         if (endpoint === 'list') {
-          sendJson(res, 200, { ok: true, value: snapshotFor(sessionId) });
+          // `scope` picks the view the panel is showing; `all` stays the default
+          // so an older browser half keeps working. `query` only narrows the
+          // list - the receipt fields are always the whole session's.
+          //
+          // Paging is opt-in: a caller that sends `limit` gets one page plus
+          // `total`/`hasMore`; a caller that does not keeps the old full-array
+          // shape, byte-compatible with an older browser half.
+          const requested = body?.scope;
+          const scope = requested === 'unread' || requested === 'history' ? requested : 'all';
+          const query = typeof body?.query === 'string' ? body.query : '';
+          // `bucket` selects which box, `scope` selects which slice of it; the
+          // two are orthogonal on purpose.
+          const bucket = body?.bucket === 'global' ? 'global' : 'session';
+          const scopeId = bucketIdOf(sessionId, bucket);
+          if (body?.limit === undefined) {
+            sendJson(res, 200, { ok: true, value: snapshotFor(scopeId, { scope, query }, sessionId) });
+            return;
+          }
+          sendJson(res, 200, { ok: true, value: pagedSnapshotFor(scopeId, { scope, query, limit: body.limit, offset: body.offset }, sessionId) });
           return;
         }
         if (endpoint === 'read') {
@@ -390,9 +537,13 @@ export function apply(rawCtx, rawConfig) {
             sendJson(res, 400, { ok: false, error: { code: 'bad-request', message: 'id must be a non-empty string' } });
             return;
           }
-          const changed = markRead(state, { sessionId, id: body.id, now: Date.now() });
+          // A global note is acknowledged in the global bucket, so the read
+          // carries the same bucket selector the list does.
+          const bucket = body?.bucket === 'global' ? 'global' : 'session';
+          const scopeId = bucketIdOf(sessionId, bucket);
+          const changed = markRead(state, { sessionId: scopeId, id: body.id, now: Date.now() });
           if (changed) schedulePersist();
-          sendJson(res, 200, { ok: true, value: { ...snapshotFor(sessionId), changed } });
+          sendJson(res, 200, { ok: true, value: { ...snapshotFor(scopeId, {}, sessionId), changed } });
           return;
         }
         sendJson(res, 404, { ok: false, error: { code: 'unknown-endpoint', message: 'no endpoint ' + endpoint } });

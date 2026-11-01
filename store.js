@@ -19,6 +19,14 @@ export const MAX_TEXT = 4000;
 export const MAX_SOURCE = 200;
 /** Item kinds rendered with a warning tone in the panel. */
 export const HIGH_SIGNAL_KINDS = new Set(['risk', 'decision']);
+/**
+ * Pseudo session id owning the cross-session bucket. Global notes live in
+ * `state.sessions[GLOBAL_SCOPE]`, so every existing per-session function works
+ * on them unchanged: pass this constant where a sessionId is expected.
+ */
+export const GLOBAL_SCOPE = '__global__';
+/** Scopes an item may carry. */
+export const SCOPES = ['session', 'global'];
 
 /**
  * An empty ledger.
@@ -54,7 +62,10 @@ function normalizeItem(item) {
   const createdAt = Number.isFinite(item.createdAt) ? item.createdAt : 0;
   const readAt = Number.isFinite(item.readAt) ? item.readAt : null;
   const source = typeof item.source === 'string' && item.source !== '' ? item.source.slice(0, MAX_SOURCE) : null;
-  return [{ id: item.id, text, kind, priority, source, createdAt, readAt }];
+  // Older ledgers have no scope at all; anything unreadable falls back to the
+  // narrowest meaning rather than promoting a private note to global.
+  const scope = SCOPES.includes(item.scope) ? item.scope : 'session';
+  return [{ id: item.id, text, kind, priority, scope, source, createdAt, readAt }];
 }
 
 /**
@@ -105,45 +116,131 @@ export function validateAdd(input) {
     if (trimmed.length > MAX_SOURCE) throw new Error('letterbox_add: source must be at most ' + MAX_SOURCE + ' characters');
     source = trimmed === '' ? null : trimmed;
   }
-  return { text, kind, priority, source };
+  if (raw.scope !== undefined && !SCOPES.includes(raw.scope)) {
+    throw new Error('letterbox_add: scope must be one of ' + SCOPES.join(', '));
+  }
+  // `scope` is only echoed when the caller named one: the default lives in
+  // `addItem`, and an absent field keeps older callers' payload shape intact.
+  return raw.scope === undefined
+    ? { text, kind, priority, source }
+    : { text, kind, priority, source, scope: raw.scope };
 }
 
 /**
- * Append one item to a session's bucket.
+ * Append one item to a bucket: the session's own, or the shared global one.
+ *
+ * `scope` may arrive on the options or on the validated payload; anything that
+ * is not `'global'` is stored as a session note, so the default never depends on
+ * the caller remembering to pass it.
+ *
  * @param state - ledger, mutated in place.
- * @param options - sessionId, validated payload, clock, id.
+ * @param options - sessionId, validated payload, clock, id, scope.
  * @returns the stored item.
  */
 export function addItem(state, options) {
   const { sessionId, payload, now, id } = options;
   if (typeof sessionId !== 'string' || sessionId === '') throw new Error('letterbox: sessionId must be a non-empty string');
-  if (!state.sessions[sessionId]) state.sessions[sessionId] = emptyBucket();
+  const scope = options.scope === 'global' || payload.scope === 'global' ? 'global' : 'session';
+  const bucketId = scope === 'global' ? GLOBAL_SCOPE : sessionId;
+  if (!state.sessions[bucketId]) state.sessions[bucketId] = emptyBucket();
   const item = {
     id,
     text: payload.text,
     kind: payload.kind,
     priority: payload.priority,
+    scope,
     source: payload.source ?? null,
     createdAt: now,
     readAt: null,
   };
-  state.sessions[sessionId].items.push(item);
+  state.sessions[bucketId].items.push(item);
   return item;
 }
 
 /**
  * List one session's items, newest first.
+ *
+ * Filtering is a `scope` plus an optional `query`:
+ * - `all` returns everything (the default, and what the panel's badge reads);
+ * - `unread` returns only items the human has not acknowledged yet;
+ * - `history` returns only acknowledged items - the ones that left the main
+ *   list when they were read.
+ * The legacy `{ unreadOnly: true }` stays equivalent to `scope: 'unread'`, so
+ * existing callers and tests keep their meaning.
+ * `query` is matched case-insensitively as a substring of text, source, or kind.
+ *
  * @param state - ledger.
  * @param sessionId - owning session.
- * @param options - `{ unreadOnly }`.
- * @returns the public item shape.
+ * @param options - `{ scope, query }` (or legacy `{ unreadOnly }`).
+ * @returns the public item shape, newest first.
  */
 export function listItems(state, sessionId, options = {}) {
   const bucket = state.sessions[sessionId];
   if (!bucket) return [];
-  const unreadOnly = options.unreadOnly === true;
-  const items = unreadOnly ? bucket.items.filter((item) => item.readAt === null) : bucket.items;
-  return items.slice().reverse().map(toPublicItem);
+  return filterBucket(bucket, options).map(toPublicItem);
+}
+
+/**
+ * The scope + query filter, shared by the full list and the paged list so the
+ * two can never drift apart. Returns stored items, newest first.
+ * @param bucket - one session's bucket.
+ * @param options - `{ scope, query, unreadOnly }`.
+ * @returns matching stored items, newest first.
+ */
+function filterBucket(bucket, options) {
+  const requested = options.scope;
+  const scope = requested === 'unread' || requested === 'history'
+    ? requested
+    : options.unreadOnly === true ? 'unread' : 'all';
+  const query = typeof options.query === 'string' ? options.query.trim().toLowerCase() : '';
+  let items = bucket.items;
+  if (scope === 'unread') items = items.filter((item) => item.readAt === null);
+  else if (scope === 'history') items = items.filter((item) => item.readAt !== null);
+  if (query !== '') items = items.filter((item) => matchesQuery(item, query));
+  return items.slice().reverse();
+}
+
+/** Page size used when a caller does not name one. */
+const DEFAULT_PAGE_LIMIT = 20;
+/** Hard page size ceiling, so one request cannot ask for the whole ledger. */
+const MAX_PAGE_LIMIT = 100;
+
+/**
+ * One page of a filtered list, newest first.
+ *
+ * `total` counts the whole filtered set (not the page), which is what lets the
+ * panel say how much is left. `limit` is clamped to 1..100 and a missing or
+ * unusable `limit` falls back to {@link DEFAULT_PAGE_LIMIT}; an offset that is
+ * negative, fractional, or not a number collapses to 0. An offset past the end
+ * returns an empty page with `hasMore: false` rather than an error.
+ *
+ * @param state - ledger.
+ * @param sessionId - owning session.
+ * @param options - `{ scope, query, limit, offset }`.
+ * @returns `{ items, total, offset, limit, hasMore }`.
+ */
+export function pageItems(state, sessionId, options = {}) {
+  const bucket = state.sessions[sessionId];
+  const filtered = bucket === undefined ? [] : filterBucket(bucket, options);
+  const total = filtered.length;
+  const requestedLimit = Number.isFinite(options.limit) ? Math.floor(options.limit) : DEFAULT_PAGE_LIMIT;
+  const limit = Math.min(Math.max(requestedLimit, 1), MAX_PAGE_LIMIT);
+  const requestedOffset = Number.isFinite(options.offset) ? Math.floor(options.offset) : 0;
+  const offset = Math.max(requestedOffset, 0);
+  const items = filtered.slice(offset, offset + limit).map(toPublicItem);
+  return { items, total, offset, limit, hasMore: offset + items.length < total };
+}
+
+/**
+ * Whether one item matches a lowercased search string.
+ * @param item - stored item.
+ * @param query - already trimmed and lowercased.
+ * @returns true when text, source, or kind contains it.
+ */
+function matchesQuery(item, query) {
+  if (item.text.toLowerCase().includes(query)) return true;
+  if (item.source !== null && item.source.toLowerCase().includes(query)) return true;
+  return item.kind.toLowerCase().includes(query);
 }
 
 /** Number of items the human has not acknowledged yet. */
@@ -249,6 +346,7 @@ export function toPublicItem(item) {
     text: item.text,
     kind: item.kind,
     priority: item.priority,
+    scope: item.scope,
     source: item.source,
     createdAt: item.createdAt,
     read: item.readAt !== null,
