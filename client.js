@@ -189,6 +189,20 @@ window.__ModuleLoader__.load({
         { tag: 'circle', attrs: { cx: '11', cy: '11', r: '8' } },
         { tag: 'path', attrs: { d: 'm21 21-4.3-4.3' } },
       ],
+      'arrow-left': [
+        { tag: 'path', attrs: { d: 'M19 12H5' } },
+        { tag: 'path', attrs: { d: 'm12 19-7-7 7-7' } },
+      ],
+      archive: [
+        { tag: 'rect', attrs: { x: '2', y: '3', width: '20', height: '5', rx: '1' } },
+        { tag: 'path', attrs: { d: 'M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8' } },
+        { tag: 'path', attrs: { d: 'M10 12h4' } },
+      ],
+      globe: [
+        { tag: 'circle', attrs: { cx: '12', cy: '12', r: '10' } },
+        { tag: 'path', attrs: { d: 'M2 12h20' } },
+        { tag: 'path', attrs: { d: 'M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z' } },
+      ],
     };
 
     /**
@@ -227,6 +241,20 @@ window.__ModuleLoader__.load({
       return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
     }
 
+    /**
+     * Gmail's list stamp: today shows HH:MM, anything older shows MM/DD.
+     * @param ts - epoch millis.
+     * @returns the compact right-hand label.
+     */
+    function formatListTime(ts) {
+      if (!Number.isFinite(ts)) return '';
+      const date = new Date(ts);
+      const now = new Date();
+      const sameDay = date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+      const two = (value) => String(value).padStart(2, '0');
+      return sameDay ? two(date.getHours()) + ':' + two(date.getMinutes()) : two(date.getMonth() + 1) + '/' + two(date.getDate());
+    }
+
     /** Kind badges shared by rows, the detail head and the toast card. */
     function kindLabel(kind) {
       if (kind === 'risk') return '风险';
@@ -241,130 +269,160 @@ window.__ModuleLoader__.load({
     // The resting background stays inline so the first paint is already correct;
     // the hover/selected backgrounds are !important because an inline background
     // would otherwise win and those states could never paint.
+
+    // Inline style cannot express :hover, the open-card accent bar, or the
+    // collapse transition, so one namespaced stylesheet is injected on mount and
+    // removed on unmount. Every selector is prefixed lbx- so two hosts (or two
+    // reloads) cannot collide; hover/open states use !important because the
+    // inline resting values would otherwise win.
+
+    // Inline style cannot express :hover, the hover-revealed row action, or the
+    // list↔detail fade, so one namespaced stylesheet is injected on mount and
+    // removed on unmount. Every selector is prefixed lbx- so two hosts (or two
+    // reloads) cannot collide; hover states use !important because the inline
+    // resting values would otherwise win.
+
+    // Inline style cannot express :hover, the hover-revealed row action, the
+    // label hover, or the responsive label bar, so one namespaced stylesheet is
+    // injected on mount and removed on unmount. Every selector is prefixed lbx-.
     const STYLE_TEXT = [
-      '.lbx-dockbtn,.lbx-ghost,.lbx-row,.lbx-tab{transition:background 120ms ease,border-color 120ms ease,box-shadow 120ms ease,color 120ms ease}',
-      '.lbx-dockbtn:hover,.lbx-ghost:hover{background:var(--dsw-alias-bg-secondary,rgba(127,127,127,0.10))!important}',
-      '.lbx-row:hover{background:var(--dsw-alias-bg-secondary,rgba(127,127,127,0.10))!important}',
-      '.lbx-row[data-active="true"]{background:var(--dsw-alias-bg-secondary,rgba(127,127,127,0.12))!important;box-shadow:inset 2px 0 0 var(--dsw-alias-brand-primary,#4c8dff)}',
-      '.lbx-dockbtn:focus-visible,.lbx-ghost:focus-visible,.lbx-row:focus-visible,.lbx-tab:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#4c8dff);outline-offset:1px}',
+      '.lbx-ghost,.lbx-row,.lbx-navitem{transition:background 120ms ease,border-color 120ms ease,box-shadow 120ms ease,color 120ms ease}',
+      '.lbx-ghost:hover{background:var(--dsw-alias-bg-secondary,rgba(127,127,127,0.10))!important}',
+      '.lbx-row:hover{background:var(--dsw-alias-bg-secondary,rgba(127,127,127,0.08))!important}',
+      '.lbx-ghost:focus-visible,.lbx-row:focus-visible,.lbx-navitem:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#4c8dff);outline-offset:-1px}',
+      '.lbx-rowact{opacity:0;transition:opacity 120ms ease}',
+      '.lbx-row:hover .lbx-rowact,.lbx-rowact:focus-visible{opacity:1}',
+      '.lbx-navlist{display:flex;flex-direction:column;gap:1px;width:176px;flex:0 0 176px;padding:8px 6px;border-right:1px solid var(--dsw-alias-border-secondary,rgba(0,0,0,0.08));box-sizing:border-box;overflow-y:auto}',
+      '.lbx-navitem{display:flex;align-items:center;gap:8px;width:100%;height:28px;padding:0 8px;border:none;border-radius:6px;background:transparent;color:inherit;font-size:12.5px;cursor:pointer;text-align:left;box-sizing:border-box}',
+      '.lbx-navitem:hover{background:var(--dsw-alias-bg-secondary,rgba(127,127,127,0.10))!important}',
+      '.lbx-navitem[data-active="true"]{background:var(--dsw-alias-bg-secondary,rgba(127,127,127,0.14))!important;font-weight:600}',
+      '.lbx-view{animation:lbx-fade-in 120ms ease both}',
+      '@keyframes lbx-fade-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}',
+      '@media (max-width: 719px){.lbx-shell{flex-direction:column}.lbx-navlist{flex-direction:row;flex-wrap:wrap;width:auto;flex:0 0 auto;border-right:none;border-bottom:1px solid var(--dsw-alias-border-secondary,rgba(0,0,0,0.08));padding:6px;overflow:visible}.lbx-navitem{width:auto;flex:0 0 auto}.lbx-divider{display:none}}',
+      '@media (prefers-reduced-motion: reduce){.lbx-view{animation:none}.lbx-rowact{transition:none}.lbx-ghost,.lbx-row,.lbx-navitem{transition:none}}',
     ].join(String.fromCharCode(10));
 
     const styles = {
-      // ── entry: 28px icon button inside the composer toolbar ──────────────
-      // In flow, right-aligned: it is covered by the scrim when the drawer is
-      // open, which is intended (the scrim/Esc close it), so it needs no z-index.
-      dock: { display: 'flex', justifyContent: 'flex-end', padding: '2px 12px' },
-      dockBtn: {
-        position: 'relative', width: 28, height: 28, padding: 0, border: 'none', borderRadius: 6,
-        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-        background: 'transparent', color: 'inherit', cursor: 'pointer', userSelect: 'none',
+      // ── page shell ───────────────────────────────────────────────────────
+      // The panel page fills the whole main column: the old 720px centred box left
+      // half the layout empty once the label rail moved inside it.
+      page: {
+        display: 'flex', flexDirection: 'column', width: '100%', height: '100%', minHeight: 0,
+        padding: '16px 24px', boxSizing: 'border-box', color: 'inherit',
       },
-      dockBadge: {
-        position: 'absolute', top: -2, right: -2, minWidth: 14, height: 14, padding: '0 3px',
-        borderRadius: 999, background: 'var(--dsw-alias-brand-primary, #4c8dff)',
-        color: '#ffffff', fontSize: 10, lineHeight: '14px', fontWeight: 600, textAlign: 'center',
-      },
-      warnDot: { width: 6, height: 6, borderRadius: '50%', background: 'var(--dsw-alias-text-warning, #b26a00)', display: 'inline-block' },
-
-      // ── scrim + drawer shell ─────────────────────────────────────────────
-      scrim: { position: 'fixed', top: 0, right: 0, bottom: 0, left: 0, zIndex: 990, background: 'transparent', pointerEvents: 'auto' },
-      panel: {
-        // Anchored to the left edge; the shadow and the divider both point right.
-        position: 'fixed', top: 0, left: 0, right: 'auto', bottom: 0, zIndex: 1000, pointerEvents: 'auto',
-        width: 'min(560px, calc(100vw - 40px))',
-        display: 'flex', flexDirection: 'column', color: 'inherit',
-        background: 'var(--dsw-alias-bg-primary, #ffffff)',
-        borderRight: '1px solid var(--dsw-alias-border-secondary, rgba(0,0,0,0.12))',
-        borderLeft: 'none',
-        boxShadow: '12px 0 32px rgba(0,0,0,0.10)',
-      },
-      panelHead: {
-        flex: '0 0 48px', height: 48, display: 'flex', alignItems: 'center', gap: 8, padding: '0 16px',
+      pageInner: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, width: '100%' },
+      topBar: {
+        flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px 10px 16px',
         borderBottom: '1px solid var(--dsw-alias-border-secondary, rgba(0,0,0,0.08))',
       },
-      panelTitle: { fontSize: 13.5, fontWeight: 600, lineHeight: 1.2 },
+      title: { fontSize: 13.5, fontWeight: 600, lineHeight: 1.2 },
       headCount: { fontSize: 12, opacity: 0.62 },
+      spacer: { flex: 1 },
       close: {
-        marginLeft: 'auto', width: 28, height: 28, padding: 0, border: 'none', borderRadius: 6,
+        width: 26, height: 26, padding: 0, border: 'none', borderRadius: 6,
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
         background: 'transparent', color: 'inherit', cursor: 'pointer',
       },
-      body: { display: 'flex', flex: 1, minHeight: 0 },
-      left: {
-        display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 10px 8px', minHeight: 0,
-        borderRight: '1px solid var(--dsw-alias-border-secondary, rgba(0,0,0,0.08))',
-      },
 
-      // ── segmented tabs ───────────────────────────────────────────────────
-      segment: { display: 'flex', gap: 2, padding: 2, borderRadius: 8, background: 'var(--dsw-alias-bg-secondary, rgba(127,127,127,0.10))' },
-      tab: {
-        flex: 1, height: 26, padding: 0, border: 'none', borderRadius: 6, lineHeight: '26px',
-        background: 'transparent', color: 'inherit', opacity: 0.62, fontSize: 12, cursor: 'pointer',
-      },
-      tabActive: {
-        flex: 1, height: 26, padding: 0, border: 'none', borderRadius: 6, lineHeight: '26px',
-        background: 'var(--dsw-alias-bg-primary, #ffffff)', color: 'inherit', opacity: 1,
-        fontSize: 12, fontWeight: 600, cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.12)',
-      },
+      // ── label rail + main column ─────────────────────────────────────────
+      shell: { display: 'flex', flex: 1, minHeight: 0 },
+      navGroup: { fontSize: 10.5, opacity: 0.55, padding: '6px 8px 2px', letterSpacing: '0.02em' },
+      navDivider: { height: 1, margin: '6px 8px', background: 'var(--dsw-alias-border-secondary, rgba(0,0,0,0.08))' },
+      navText: { flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+      navCount: { fontSize: 11, opacity: 0.6, marginLeft: 4 },
+      main: { display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, minHeight: 0 },
 
-      // ── history search ───────────────────────────────────────────────────
-      searchWrap: { position: 'relative' },
-      searchIcon: { position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', opacity: 0.55, pointerEvents: 'none' },
+      // ── list toolbar ─────────────────────────────────────────────────────
+      toolbar: {
+        flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: 8, padding: '7px 16px',
+        borderBottom: '1px solid var(--dsw-alias-border-secondary, rgba(0,0,0,0.06))',
+      },
+      toolbarLabel: { fontSize: 12, fontWeight: 500 },
+      toolbarCount: { fontSize: 11.5, opacity: 0.6, whiteSpace: 'nowrap' },
+      toolbarBtn: { border: 'none', background: 'transparent', color: 'inherit', fontSize: 12, padding: '2px 4px', borderRadius: 4, cursor: 'pointer' },
+      toolbarDot: { fontSize: 12, opacity: 0.4 },
+      selectBar: {
+        flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: 10, padding: '6px 16px',
+        background: 'var(--dsw-alias-bg-secondary, rgba(127,127,127,0.10))',
+        borderBottom: '1px solid var(--dsw-alias-border-secondary, rgba(0,0,0,0.08))',
+      },
+      selectText: { fontSize: 12, fontWeight: 500 },
+
+      // ── search (history only) ────────────────────────────────────────────
+      searchRow: { flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px' },
+      searchWrap: { position: 'relative', flex: 1, minWidth: 0 },
+      searchIcon: { position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', opacity: 0.55, pointerEvents: 'none', display: 'inline-flex' },
       search: {
-        width: '100%', boxSizing: 'border-box', height: 32, fontSize: 12, padding: '8px 8px 8px 30px',
-        borderRadius: 8, border: '1px solid var(--dsw-alias-border-secondary, rgba(0,0,0,0.12))',
-        background: 'transparent', color: 'inherit',
+        width: '100%', boxSizing: 'border-box', height: 32, padding: '8px 8px 8px 30px', borderRadius: 8, fontSize: 12,
+        border: '1px solid var(--dsw-alias-border-secondary, rgba(0,0,0,0.14))',
+        background: 'transparent', color: 'inherit', outline: 'none',
       },
 
       // ── list ─────────────────────────────────────────────────────────────
-      scroll: { flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2, paddingRight: 2 },
+      listScroll: { flex: 1, minHeight: 0, overflowY: 'auto' },
+      list: { display: 'flex', flexDirection: 'column' },
       row: {
-        display: 'block', width: '100%', textAlign: 'left', padding: '8px 10px', borderRadius: 8,
-        border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer',
+        display: 'flex', alignItems: 'center', gap: 8, width: '100%', boxSizing: 'border-box',
+        minHeight: 44, padding: '6px 16px', border: 'none', borderRadius: 0, textAlign: 'left',
+        background: 'transparent', color: 'inherit', cursor: 'pointer',
+        borderBottom: '1px solid var(--dsw-alias-border-secondary, rgba(0,0,0,0.06))',
       },
-      rowTop: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 11 },
-      badge: {
-        fontSize: 10.5, padding: '1px 6px', borderRadius: 999, whiteSpace: 'nowrap',
-        background: 'var(--dsw-alias-bg-tertiary, rgba(127,127,127,0.16))', color: 'inherit',
+      rowCheck: { width: 13, height: 13, margin: 0, flex: '0 0 auto', cursor: 'pointer', accentColor: 'var(--dsw-alias-brand-primary, #4c8dff)' },
+      dot: { width: 6, height: 6, flex: '0 0 6px', borderRadius: '50%', background: 'var(--dsw-alias-brand-primary, #4c8dff)' },
+      dotEmpty: { width: 6, height: 6, flex: '0 0 6px' },
+      kindBadge: { flex: '0 0 auto', fontSize: 10, padding: '1px 5px', borderRadius: 4, background: 'var(--dsw-alias-bg-tertiary, rgba(127,127,127,0.16))', color: 'inherit' },
+      kindBadgeWarn: { flex: '0 0 auto', fontSize: 10, padding: '1px 5px', borderRadius: 4, background: 'var(--dsw-alias-bg-tertiary, rgba(127,127,127,0.16))', color: 'var(--dsw-alias-text-warning, #b26a00)' },
+      rowMain: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1 },
+      subject: { fontSize: 13, fontWeight: 600, lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+      subjectRead: { fontSize: 13, fontWeight: 400, lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', opacity: 0.85 },
+      snippet: { fontSize: 12, opacity: 0.6, lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+      time: { flex: '0 0 auto', fontSize: 11, opacity: 0.6, whiteSpace: 'nowrap', marginLeft: 4 },
+      rowAction: {
+        flex: '0 0 auto', width: 24, height: 24, padding: 0, border: 'none', borderRadius: 4,
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        background: 'transparent', color: 'inherit', cursor: 'pointer',
       },
-      badgeWarn: {
-        fontSize: 10.5, padding: '1px 6px', borderRadius: 999, whiteSpace: 'nowrap',
-        background: 'var(--dsw-alias-bg-tertiary, rgba(127,127,127,0.16))',
-        color: 'var(--dsw-alias-text-warning, #b26a00)',
-      },
-      rowTime: { fontSize: 11, opacity: 0.6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
-      rowTitle: {
-        marginTop: 2, fontSize: 12.5, fontWeight: 500, lineHeight: 1.45,
-        display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
-      },
-      rowSource: { marginTop: 2, fontSize: 11, opacity: 0.6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
 
-      // ── pagination ───────────────────────────────────────────────────────
-      pager: { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, fontSize: 12, opacity: 0.7 },
-      pagerCount: { marginRight: 'auto', fontSize: 12, opacity: 0.62 },
-      more: { fontSize: 12, padding: '2px 6px', border: 'none', borderRadius: 6, background: 'transparent', color: 'inherit', cursor: 'pointer' },
-
-      // ── right column ─────────────────────────────────────────────────────
-      right: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 12, padding: '16px 18px', overflowY: 'auto' },
-      detailHead: { display: 'flex', alignItems: 'center', gap: 8 },
-      detailTitle: { fontSize: 14, fontWeight: 600, lineHeight: 1.3 },
-      detailText: { fontSize: 13, lineHeight: 1.65, maxWidth: '60ch', whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
-      fields: { display: 'grid', gridTemplateColumns: '56px 1fr', columnGap: 8, rowGap: 6, alignItems: 'baseline' },
-      fieldLabel: { fontSize: 11, opacity: 0.62 },
-      fieldValue: { fontSize: 12.5, minWidth: 0, wordBreak: 'break-word' },
-      action: {
-        alignSelf: 'flex-start', height: 30, display: 'inline-flex', alignItems: 'center', gap: 6,
-        padding: '0 14px', borderRadius: 8, fontSize: 12.5, cursor: 'pointer', color: 'inherit',
-        border: '1px solid var(--dsw-alias-border-secondary, rgba(0,0,0,0.18))', background: 'transparent',
-      },
-      // ── sidebar panel page (layout "main" slot) ─────────────────────────
-      page: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, color: 'inherit' },
-      pageHead: {
-        flex: '0 0 44px', display: 'flex', alignItems: 'center', gap: 8, padding: '0 16px',
+      // ── detail view ──────────────────────────────────────────────────────
+      detailView: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 },
+      detailBar: {
+        flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: 6, padding: '8px 12px 8px 8px',
         borderBottom: '1px solid var(--dsw-alias-border-secondary, rgba(0,0,0,0.08))',
       },
-      empty: { flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '24px 0', fontSize: 12.5, opacity: 0.7 },
-      emptyIcon: { opacity: 0.5 },
+      back: {
+        display: 'inline-flex', alignItems: 'center', gap: 4, height: 26, padding: '0 8px', borderRadius: 6,
+        border: 'none', background: 'transparent', color: 'inherit', fontSize: 12, cursor: 'pointer',
+      },
+      iconBtn: {
+        width: 26, height: 26, padding: 0, borderRadius: 6, border: 'none',
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        background: 'transparent', color: 'inherit', cursor: 'pointer',
+      },
+      detailScroll: { flex: 1, minHeight: 0, overflowY: 'auto', padding: '14px 16px 20px' },
+      detailTitleRow: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 },
+      prioDot: { width: 5, height: 5, borderRadius: '50%', background: 'var(--dsw-alias-text-warning, #b26a00)', display: 'inline-block' },
+      detailTime: { marginLeft: 'auto', fontSize: 11, opacity: 0.6 },
+      detailText: {
+        fontSize: 14, lineHeight: 1.7, whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
+        maxWidth: '72ch',
+      },
+      fields: { marginTop: 14, display: 'grid', gridTemplateColumns: '56px 1fr', columnGap: 8, rowGap: 6, alignItems: 'baseline' },
+      fieldLabel: { fontSize: 11, opacity: 0.55 },
+      fieldValue: { fontSize: 12, opacity: 0.75, minWidth: 0, wordBreak: 'break-word' },
+
+      // ── pager ────────────────────────────────────────────────────────────
+      pagerBar: {
+        flex: '0 0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+        padding: '8px 12px', borderTop: '1px solid var(--dsw-alias-border-secondary, rgba(0,0,0,0.08))',
+      },
+      pagerText: { fontSize: 11.5, opacity: 0.62 },
+      more: { fontSize: 12, padding: '4px 10px', border: 'none', borderRadius: 6, background: 'transparent', color: 'inherit', cursor: 'pointer' },
+
+      // ── empty state ──────────────────────────────────────────────────────
+      empty: { flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '40px 24px', textAlign: 'center' },
+      emptyIcon: { opacity: 0.3, marginBottom: 4, display: 'inline-flex' },
+      emptyTitle: { fontSize: 13, fontWeight: 500 },
+      emptyHint: { fontSize: 12, opacity: 0.6, lineHeight: 1.5 },
 
       // ── toast card ───────────────────────────────────────────────────────
       toast: {
@@ -375,49 +433,382 @@ window.__ModuleLoader__.load({
         boxShadow: '0 8px 24px rgba(0,0,0,0.18)', cursor: 'pointer',
       },
       toastHead: { display: 'flex', alignItems: 'center', gap: 6 },
-      toastText: { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', lineHeight: 1.45 },
-      toastFoot: { display: 'flex', justifyContent: 'flex-end' },
+      toastText: {
+        lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+      },
+      toastFoot: { display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 6 },
     };
 
     /** Viewport width, so the drawer can pick its narrow geometry once. */
-    function useViewportWidth() {
-      const read = () => (typeof window !== 'undefined' && Number.isFinite(window.innerWidth) ? window.innerWidth : 1280);
-      const [width, setWidth] = React.useState(read);
+
+
+    /**
+     * The inbox page, mounted in the layout's keyed main slot. One header, one
+     * label rail, one Gmail-style list with an in-place detail view.
+     */
+    function InboxPanel({ sessions }) {
+      const sessionId = useSessionId(sessions);
+      // One label drives box and view together, like a mail label rail.
+      const [labelId, setLabelId] = React.useState('session:unread');
+      const [bucket, tab] = labelId.split(':');
+      const ledger = useLedger(sessionId, 'session', true);
+      const globalLedger = useLedger(sessionId, 'global', bucket === 'global');
+      const active = bucket === 'global' ? globalLedger : ledger;
+      const [query, setQuery] = React.useState('');
+      const [selectedId, setSelectedId] = React.useState(null);
+      const [checked, setChecked] = React.useState([]);
+      const [busy, setBusy] = React.useState(false);
+      const searched = useDebounced(query.trim(), SEARCH_DEBOUNCE_MS);
+      const list = usePagedList(sessionId, bucket, tab === 'history' ? 'history' : 'unread', tab === 'history' ? searched : '', true, active.unreadCount);
+
+      // The list is unmounted while the detail view is open, so its scroll offset
+      // lives in a ref and is written back the moment the list returns.
+      const listScroll = React.useRef(0);
+      const listRef = React.useRef(null);
+
+      // Put the reader back where they left the list.
       React.useEffect(() => {
-        if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined;
-        const onResize = () => setWidth(read());
-        window.addEventListener('resize', onResize);
-        return () => { window.removeEventListener('resize', onResize); };
+        if (selectedId !== null) return;
+        const node = listRef.current;
+        if (node !== null) node.scrollTop = listScroll.current;
+      }, [selectedId, list.items]);
+
+      // Hover states, the row action and the view fade live in one injected sheet.
+      React.useEffect(() => {
+        if (typeof document === 'undefined' || document.head === null || typeof document.createElement !== 'function') return undefined;
+        const sheet = document.createElement('style');
+        sheet.setAttribute('data-letterbox-styles', 'true');
+        sheet.textContent = STYLE_TEXT;
+        document.head.appendChild(sheet);
+        return () => { if (sheet.parentNode !== null) sheet.parentNode.removeChild(sheet); };
       }, []);
-      return width;
+
+      if (sessionId === null) return null;
+
+      const sessionUnread = ledger.unreadCount;
+      const globalUnread = ledger.globalUnreadCount;
+      const items = list.items;
+      const detailItem = selectedId === null ? null : (items.find((item) => item.id === selectedId) ?? null);
+      const loading = !list.loaded;
+
+      React.useEffect(() => {
+        if (selectedId === null || !list.loaded || detailItem !== null) return;
+        setSelectedId(null);
+      }, [selectedId, list.loaded, detailItem]);
+
+      const openItem = (id) => {
+        const node = listRef.current;
+        listScroll.current = node === null ? 0 : node.scrollTop;
+        setSelectedId(id);
+      };
+      const pickLabel = (next) => { setLabelId(next); setSelectedId(null); setChecked([]); setQuery(''); };
+      const toggleCheck = (id) => setChecked((current) => (current.includes(id) ? current.filter((value) => value !== id) : current.concat([id])));
+      const pageSize = list.limit || PAGE_SIZE;
+      const gotoNewer = () => { setSelectedId(null); setChecked([]); list.setOffset(Math.max(0, list.offset - pageSize)); };
+      const gotoOlder = () => { if (!list.hasMore) return; setSelectedId(null); setChecked([]); list.setOffset(list.offset + pageSize); };
+
+      // One acknowledged note per call, one call at a time: a failure is swallowed
+      // so the remaining notes still get acknowledged.
+      const markIds = async (ids) => {
+        if (busy || ids.length === 0) return;
+        setBusy(true);
+        for (const id of ids) {
+          try { await active.markRead(id); } catch { /* keep going */ }
+        }
+        setBusy(false);
+        setChecked([]);
+        list.reload();
+      };
+
+      const firstLine = (text) => {
+        const line = text.split('\n').map((part) => part.trim()).find((part) => part !== '');
+        return line === undefined ? text.trim() : line;
+      };
+      const snippet = (text) => {
+        const lines = text.split('\n').map((part) => part.trim()).filter((part) => part !== '');
+        return lines.length > 1 ? lines.slice(1).join(' ') : '';
+      };
+
+      const field = (name, value) => h(React.Fragment, { key: 'field-' + name },
+        h('span', { style: styles.fieldLabel }, name),
+        h('span', { style: styles.fieldValue }, value),
+      );
+
+      const badge = (item) => h('span', { style: item.priority === 'high' ? styles.kindBadgeWarn : styles.kindBadge }, kindLabel(item.kind));
+
+      const row = (item) => {
+        const isChecked = checked.includes(item.id);
+        const preview = snippet(item.text);
+        return h('div', {
+          key: item.id,
+          className: 'lbx-row',
+          style: styles.row,
+          role: 'button',
+          tabIndex: 0,
+          'aria-label': firstLine(item.text),
+          onClick: () => openItem(item.id),
+          onKeyDown: (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return;
+            if (typeof event.preventDefault === 'function') event.preventDefault();
+            openItem(item.id);
+          },
+        },
+          h('input', {
+            type: 'checkbox',
+            className: 'lbx-check',
+            style: styles.rowCheck,
+            checked: isChecked,
+            'aria-label': '选择这条',
+            onClick: (event) => { if (event && typeof event.stopPropagation === 'function') event.stopPropagation(); },
+            onChange: () => toggleCheck(item.id),
+          }),
+          item.read ? h('span', { style: styles.dotEmpty, 'aria-hidden': true }) : h('span', { style: styles.dot, 'aria-hidden': true }),
+          badge(item),
+          h('div', { style: styles.rowMain },
+            h('div', { style: item.read ? styles.subjectRead : styles.subject }, firstLine(item.text)),
+            preview === '' ? null : h('div', { style: styles.snippet }, preview),
+          ),
+          h('span', { style: styles.time }, formatListTime(tab === 'history' && item.readAt ? item.readAt : item.createdAt)),
+          item.read
+            ? null
+            : h('button', {
+              type: 'button',
+              className: 'lbx-ghost lbx-rowact',
+              style: styles.rowAction,
+              'aria-label': '标记为已读',
+              onClick: (event) => {
+                if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+                void markIds([item.id]);
+              },
+            }, icon('check', 14)),
+        );
+      };
+
+
+      const navItem = (id, iconName, text, count) => h('button', {
+        key: id,
+        type: 'button',
+        className: 'lbx-navitem',
+        'data-active': labelId === id ? 'true' : 'false',
+        'aria-current': labelId === id ? 'page' : undefined,
+        onClick: () => pickLabel(id),
+      },
+        icon(iconName, 16),
+        h('span', { style: styles.navText }, text),
+        count > 0 ? h('span', { style: styles.navCount }, String(count)) : null,
+      );
+
+      // Gmail's shape: a label rail on the left, one toolbar over the list. The
+      // two segmented controls this replaced lived inside the header and made the
+      // page read as a settings form rather than a mailbox.
+      const navList = h('div', { className: 'lbx-navlist' },
+        h('div', { style: styles.navGroup }, '会话'),
+        navItem('session:unread', 'inbox', '未读', sessionUnread),
+        navItem('session:history', 'archive', '历史', 0),
+        h('div', { className: 'lbx-divider', style: styles.navDivider }),
+        h('div', { style: styles.navGroup }, '全局'),
+        navItem('global:unread', 'globe', '未读', globalUnread),
+        navItem('global:history', 'archive', '历史', 0),
+      );
+
+      const labelName = (bucket === 'global' ? '全局' : '会话') + ' · ' + (tab === 'history' ? '历史' : '未读');
+
+      const topBar = (withClose) => h('div', { style: styles.topBar },
+        h('span', { style: styles.title }, '收件箱'),
+        h('span', { style: styles.headCount }, sessionUnread > 0 ? sessionUnread + ' 条未读' : '全部已读'),
+        h('span', { style: styles.spacer }),
+        withClose
+          ? h('button', {
+            type: 'button',
+            className: 'lbx-ghost',
+            style: styles.close,
+            onClick: () => setOpen(false),
+            'aria-label': '关闭收件箱',
+          }, icon('x'))
+          : null,
+      );
+
+      const allChecked = items.length > 0 && items.every((item) => checked.includes(item.id));
+      const range = list.total === 0 ? '0 / 0' : (list.offset + 1) + '–' + (list.offset + items.length) + ' / ' + list.total;
+
+      // The one counting line in the toolbar; the pager keeps the verbose form.
+      const listToolbar = h('div', { style: styles.toolbar },
+        h('input', {
+          type: 'checkbox',
+          style: styles.rowCheck,
+          checked: allChecked,
+          'aria-label': '全选本页',
+          onChange: () => setChecked(allChecked ? [] : items.map((item) => item.id)),
+        }),
+        h('span', { style: styles.toolbarLabel }, labelName),
+        h('span', { style: styles.spacer }),
+        h('span', { style: styles.toolbarCount }, list.loaded ? range : '读取中…'),
+      );
+
+      const searchRow = tab === 'history' ? h('div', { style: styles.searchRow },
+        h('div', { style: styles.searchWrap },
+          h('span', { style: styles.searchIcon }, icon('search')),
+          h('input', {
+            type: 'search',
+            value: query,
+            placeholder: '搜索已读：正文 / 来源 / 类型',
+            'aria-label': '搜索历史条目',
+            style: styles.search,
+            onChange: (event) => { setQuery(event.target.value); setSelectedId(null); setChecked([]); },
+          }),
+        ),
+      ) : null;
+
+      const selectBar = checked.length === 0 ? null : h('div', { style: styles.selectBar },
+        h('span', { style: styles.selectText }, '已选 ' + checked.length + ' 项'),
+        h('span', { style: styles.toolbarDot }, '·'),
+        h('button', {
+          type: 'button',
+          className: 'lbx-ghost',
+          style: styles.toolbarBtn,
+          disabled: busy === true,
+          onClick: () => void markIds(checked),
+        }, busy ? '标记中…' : '标记为已读'),
+        h('span', { style: styles.toolbarDot }, '·'),
+        h('button', { type: 'button', className: 'lbx-ghost', style: styles.toolbarBtn, onClick: () => setChecked([]) }, '取消选择'),
+      );
+
+      const emptyBlock = (title, hint) => h('div', { style: styles.empty },
+        h('span', { style: styles.emptyIcon }, icon('inbox', 32)),
+        h('div', { style: styles.emptyTitle }, title),
+        hint === null ? null : h('div', { style: styles.emptyHint }, hint),
+      );
+
+      const empty = () => {
+        if (loading) return emptyBlock('读取中…', null);
+        if (list.error !== null) return emptyBlock('收件箱读取失败', String(list.error));
+        if (tab === 'history') {
+          if (searched !== '') return emptyBlock('没有匹配的历史', '换个关键词再试');
+          return bucket === 'global'
+            ? emptyBlock('全局没有历史', '跨会话的条目会收在这里')
+            : emptyBlock('还没有历史', '标记为已读的条目会收在这里');
+        }
+        return bucket === 'global'
+          ? emptyBlock('全局没有未读', '跨会话的条目会出现在这里')
+          : emptyBlock('没有未读', '新条目会出现在这里');
+      };
+
+      const pager = items.length === 0 ? null : h('div', { style: styles.pagerBar },
+        h('button', {
+          type: 'button',
+          className: 'lbx-ghost',
+          style: styles.more,
+          disabled: list.offset === 0,
+          onClick: gotoNewer,
+        }, '较新'),
+        h('span', { style: styles.pagerText }, list.total === 0
+          ? '共 0 条'
+          : '第 ' + (list.offset + 1) + '–' + (list.offset + items.length) + ' 条，共 ' + list.total + ' 条'),
+        h('button', {
+          type: 'button',
+          className: 'lbx-ghost',
+          style: styles.more,
+          disabled: list.hasMore !== true,
+          onClick: gotoOlder,
+        }, '较旧'),
+      );
+
+      const listView = h(React.Fragment, null,
+        listToolbar,
+        searchRow,
+        selectBar,
+        items.length === 0
+          ? empty()
+          : h('div', { ref: listRef, style: styles.listScroll },
+            h('div', { style: styles.list }, items.map(row)),
+          ),
+        pager,
+      );
+
+      const index = detailItem === null ? -1 : items.findIndex((item) => item.id === detailItem.id);
+      const previous = index > 0 ? items[index - 1] : null;
+      const next = index >= 0 && index < items.length - 1 ? items[index + 1] : null;
+      const detailView = detailItem === null ? null : h('div', { className: 'lbx-view', style: styles.detailView },
+        h('div', { style: styles.detailBar },
+          h('button', {
+            type: 'button',
+            className: 'lbx-ghost',
+            style: styles.back,
+            onClick: () => setSelectedId(null),
+            'aria-label': '返回列表',
+          }, icon('arrow-left', 14), h('span', null, '返回')),
+          h('span', { style: styles.spacer }),
+          detailItem.read
+            ? null
+            : h('button', {
+              type: 'button',
+              className: 'lbx-ghost',
+              style: styles.iconBtn,
+              'aria-label': '标记为已读',
+              title: '标记为已读',
+              onClick: () => void markIds([detailItem.id]),
+            }, icon('check', 15)),
+          h('button', {
+            type: 'button',
+            className: 'lbx-ghost',
+            style: styles.more,
+            disabled: previous === null,
+            onClick: () => { if (previous !== null) setSelectedId(previous.id); },
+          }, '上一封'),
+          h('button', {
+            type: 'button',
+            className: 'lbx-ghost',
+            style: styles.more,
+            disabled: next === null,
+            onClick: () => { if (next !== null) setSelectedId(next.id); },
+          }, '下一封'),
+        ),
+        h('div', { style: styles.detailScroll },
+          h('div', { style: styles.detailTitleRow },
+            badge(detailItem),
+            detailItem.priority === 'high' ? h('span', { style: styles.prioDot, 'aria-hidden': true }) : null,
+            h('span', { style: styles.detailTime }, formatReadAt(detailItem.createdAt)),
+          ),
+          h('div', { style: styles.detailText }, detailItem.text),
+          h('div', { style: styles.fields },
+            field('类型', kindLabel(detailItem.kind)),
+            field('优先级', detailItem.priority === 'high' ? 'high' : 'normal'),
+            field('来源', detailItem.source === null ? '—' : detailItem.source),
+            field('创建', formatReadAt(detailItem.createdAt)),
+            detailItem.read ? field('已读', formatReadAt(detailItem.readAt)) : field('已读', '未读'),
+          ),
+        ),
+      );
+
+      const mainColumn = h('div', { style: styles.main }, detailItem === null ? listView : detailView);
+      const shell = h('div', { className: 'lbx-shell', style: styles.shell }, navList, mainColumn);
+      return h('div', { style: styles.page }, h('div', { style: styles.pageInner }, topBar(), shell));
+    }
+
+    /** Stable panel id: the sidebar row's id must equal the main slot's key. */
+    const PANEL_ID = 'letterbox';
+    /** Sits between 自动化任务 (10) and 健康提醒 (40) in the nav column. */
+    const PANEL_ORDER = 30;
+
+    /**
+     * Sidebar glyph. The sidebar owns the button and passes its own size
+     * (16 expanded, 18 collapsed); it resolves the label from our metadata.
+     */
+    function InboxGlyph(props) {
+      return icon('inbox', props?.size ?? 16);
     }
 
     /**
-     * The inbox UI. `variant` picks the surface: `dock` is the composer button
-     * plus the portalled drawer/card, `panel` is the page mounted in the
-     * layout's keyed `main` slot when the sidebar entry is selected.
+     * Always-mounted host in the composer dock: it polls the session box and
+     * renders nothing unless a note arrives, so the toolbar keeps its height.
+     * The card is portalled to <body> so no ancestor transform can trap it.
      */
-    function LetterboxDock({ sessions, variant = 'dock' }) {
-      const isDock = variant !== 'panel';
+    function InboxToastHost({ sessions, layout }) {
       const sessionId = useSessionId(sessions);
-      const [bucket, setBucket] = React.useState('session');
-      const [open, setOpen] = React.useState(false);
-      // The session box is always polled: the entry button's count is session-only.
       const ledger = useLedger(sessionId, 'session', true);
-      const globalLedger = useLedger(sessionId, 'global', (open || !isDock) && bucket === 'global');
-      const active = bucket === 'global' ? globalLedger : ledger;
-      const [tab, setTab] = React.useState('unread');
-      const [query, setQuery] = React.useState('');
-      const [selectedId, setSelectedId] = React.useState(null);
       const [toast, setToast] = React.useState(null);
       const [toastPaused, setToastPaused] = React.useState(false);
-      const searched = useDebounced(query.trim(), SEARCH_DEBOUNCE_MS);
-      const history = useHistory(sessionId, (open || !isDock) && tab === 'history', searched, active.unreadCount, bucket);
-      const viewport = useViewportWidth();
 
-      // One portal host for every floating layer, created on mount and removed on
-      // unmount. pointer-events stays off on the host so it can never swallow a
-      // click meant for the conversation; each child turns it back on.
       const [portalHost, setPortalHost] = React.useState(null);
       React.useEffect(() => {
         if (typeof document === 'undefined' || document.body === null || typeof document.createElement !== 'function') return undefined;
@@ -428,8 +819,7 @@ window.__ModuleLoader__.load({
         host.style.inset = '0';
         host.style.pointerEvents = 'none';
         // Non-zero on purpose: a z-index of 0 makes this host a stacking context
-        // at level 0, so another plugin's own overlay (e.g. a full-screen veil)
-        // can paint over our drawer even though our layers are 990+.
+        // at level 0, so another plugin's own overlay can paint over the card.
         host.style.zIndex = '999';
         document.body.appendChild(host);
         setPortalHost(host);
@@ -440,17 +830,14 @@ window.__ModuleLoader__.load({
         };
       }, []);
 
-      // ── when a card may appear ───────────────────────────────────────────
-      // Only a note that arrived while the human was already looking counts.
-      // The first loaded snapshot merely primes the baseline, so a window reload
-      // never replays old notes as news; a read that merely uncovers an older
-      // unread note fails the createdAt test, so it never pops a card either.
+      // Only a note that arrived while the human was already looking counts. The
+      // first loaded snapshot merely primes the baseline, so a window reload never
+      // replays old notes as news; a read that uncovers an older note fails the
+      // createdAt test and never pops a card either.
       const primed = React.useRef(false);
       const latestUnread = React.useRef(null);
-      const openRef = React.useRef(open);
-      openRef.current = open;
       React.useEffect(() => {
-        if (!isDock || !ledger.loaded) return;
+        if (!ledger.loaded) return;
         const newest = ledger.items.find((item) => !item.read) ?? null;
         const snapshot = newest === null ? null : { id: newest.id, createdAt: newest.createdAt };
         if (!primed.current) {
@@ -460,19 +847,18 @@ window.__ModuleLoader__.load({
         }
         const previous = latestUnread.current;
         latestUnread.current = snapshot;
-        if (snapshot === null || openRef.current) return;
+        if (snapshot === null) return;
         if (previous !== null && snapshot.id === previous.id) return;
         if (previous !== null && !(snapshot.createdAt > previous.createdAt)) return;
         setToast({ id: snapshot.id, item: newest });
         setToastPaused(false);
-      }, [isDock, ledger.loaded, ledger.items]);
+      }, [ledger.loaded, ledger.items]);
 
       // Eight seconds on screen, paused while the pointer rests on the card and
       // resumed with the leftover time instead of a fresh countdown.
       const remaining = React.useRef(TOAST_MS);
       const toastKey = React.useRef(null);
       React.useEffect(() => {
-        if (!isDock) return undefined;
         if (toast === null) {
           remaining.current = TOAST_MS;
           toastKey.current = null;
@@ -489,283 +875,31 @@ window.__ModuleLoader__.load({
           clearTimeout(timer);
           remaining.current = Math.max(remaining.current - (Date.now() - startedAt), 0);
         };
-      }, [isDock, toast, toastPaused]);
+      }, [toast, toastPaused]);
 
-      React.useEffect(() => {
-        if (!open) return undefined;
-        const onKeyDown = (event) => {
-          if (event.key !== 'Escape') return;
-          if (typeof event.preventDefault === 'function') event.preventDefault();
-          setOpen(false);
-        };
-        window.addEventListener('keydown', onKeyDown);
-        return () => window.removeEventListener('keydown', onKeyDown);
-      }, [open]);
+      if (sessionId === null || toast === null) return null;
 
-      // Opening the drawer with nothing selected picks the top row of the tab.
-      React.useEffect(() => {
-        if ((isDock && !open) || selectedId !== null) return;
-        const list = tab === 'history' ? history.items : active.items.filter((item) => !item.read);
-        if (list.length > 0) setSelectedId(list[0].id);
-      }, [isDock, open, selectedId, tab, active.items, history.items]);
-
-      // Hover states and the selected-row accent bar live in one injected sheet.
-      React.useEffect(() => {
-        if (typeof document === 'undefined' || document.head === null || typeof document.createElement !== 'function') return undefined;
-        const sheet = document.createElement('style');
-        sheet.setAttribute('data-letterbox-styles', 'true');
-        sheet.textContent = STYLE_TEXT;
-        document.head.appendChild(sheet);
-        return () => { if (sheet.parentNode !== null) sheet.parentNode.removeChild(sheet); };
-      }, []);
-
-      if (sessionId === null) return null;
-
-      const sessionUnread = ledger.unreadCount;
-      const globalUnread = ledger.globalUnreadCount;
-      const unread = active.unreadCount;
-      const unreadItems = active.items.filter((item) => !item.read);
-      const selected = selectedId === null
-        ? null
-        : (active.items.find((item) => item.id === selectedId) ?? history.items.find((item) => item.id === selectedId) ?? null);
-      const narrow = Math.min(560, viewport - 40) < 520;
-      const leftWidth = narrow ? 200 : 240;
-
-      const openPanel = (id) => {
-        setOpen(true);
+      // The layout service is the cross-plugin panel face; when it is missing the
+      // card still carries the text, so clicking it just dismisses.
+      const openInbox = () => {
         setToast(null);
-        if (typeof id === 'string' && id !== '') setSelectedId(id);
+        try {
+          if (layout !== null && layout !== undefined && typeof layout.selectPanel === 'function') layout.selectPanel(PANEL_ID);
+        } catch {
+          /* the main panel is not registered yet; the card already said its piece */
+        }
       };
-      const switchTab = (next) => {
-        setTab(next);
-        setSelectedId(null);
-      };
-      const switchBucket = (next) => {
-        setBucket(next);
-        setSelectedId(null);
-        setQuery('');
-      };
-      const emptyBlock = (iconName, text) => h('div', { style: styles.empty },
-        h('span', { style: styles.emptyIcon }, icon(iconName, 20)),
-        h('span', null, text),
-      );
-      const field = (name, value) => h(React.Fragment, { key: 'field-' + name },
-        h('span', { style: styles.fieldLabel }, name),
-        h('span', { style: styles.fieldValue }, value),
-      );
-      const row = (item) => h('button', {
-        key: item.id,
-        type: 'button',
-        className: 'lbx-row',
-        'data-active': item.id === selectedId ? 'true' : 'false',
-        style: styles.row,
-        onClick: () => setSelectedId(item.id),
-      },
-        h('span', { style: styles.rowTop },
-          h('span', { style: item.priority === 'high' ? styles.badgeWarn : styles.badge }, kindLabel(item.kind)),
-          h('span', { style: styles.rowTime }, tab === 'history' ? formatReadAt(item.readAt) : formatClock(item.createdAt)),
-        ),
-        h('div', { style: styles.rowTitle }, item.text),
-        h('div', { style: styles.rowSource }, item.source === null ? '—' : '来自 ' + item.source),
-      );
 
-      // The receipt details the icon cannot show survive as its tooltip; the
-      // badge counts session notes only, and the dot marks a miss or an error.
-      const dockMeta = [
-        ledger.checkedAt ? '上次核对 ' + formatClock(ledger.checkedAt) : null,
-        ledger.misses > 0 ? 'Agent 漏核对 ' + ledger.misses + ' 轮' : null,
-        globalUnread > 0 ? '全局 ' + globalUnread + ' 条未读' : null,
-        ledger.error !== null ? '连接异常：' + ledger.error : null,
-      ].filter((part) => part !== null).join(' · ');
-      const dockAlert = ledger.misses > 0 || ledger.error !== null;
-
-      const dockEntry = h('div', { style: styles.dock },
-        h('button', {
-          type: 'button',
-          className: 'lbx-dockbtn',
-          style: styles.dockBtn,
-          'aria-label': '打开收件箱（' + sessionUnread + ' 条未读）',
-          'aria-expanded': open,
-          title: dockMeta === '' ? '收件箱' : '收件箱 · ' + dockMeta,
-          onClick: () => { if (open) setOpen(false); else openPanel(); },
-        },
-          icon('inbox'),
-          sessionUnread > 0 ? h('span', { style: styles.dockBadge }, String(sessionUnread)) : null,
-          dockAlert ? h('span', { style: { ...styles.warnDot, position: 'absolute', bottom: 2, right: 2 }, 'aria-hidden': true }) : null,
-        ),
-      );
-
-      const listRows = tab === 'history'
-        ? (history.items.length === 0
-          ? emptyBlock('search', history.error !== null ? '历史读取失败' : (history.loaded ? (searched === '' ? '还没有历史' : '没有匹配的历史') : '读取中…'))
-          : history.items.map(row))
-        : (unreadItems.length === 0
-          ? emptyBlock('inbox', ledger.loaded ? '没有未读' : '读取中…')
-          : unreadItems.map(row));
-
-      const pager = tab === 'history' && history.hasMore
-        ? h('div', { style: styles.pager },
-          history.loadingMore
-            ? h('span', { style: styles.pagerCount }, '加载中…')
-            : h('button', {
-              type: 'button',
-              className: 'lbx-ghost',
-              style: styles.more,
-              disabled: history.loadingMore === true,
-              onClick: () => void history.loadMore(),
-            }, '加载更多（还剩 ' + (history.total - history.items.length) + ' 条）'),
-        )
-        : null;
-
-      const detail = selected === null
-        ? emptyBlock('inbox', '从左边选一条')
-        : [
-          h('div', { key: 'head', style: styles.detailHead },
-            h('span', { style: styles.detailTitle }, kindLabel(selected.kind)),
-            h('span', { style: selected.priority === 'high' ? styles.badgeWarn : styles.badge }, selected.priority === 'high' ? '高优先' : 'normal'),
-            h('span', { style: styles.rowTime }, selected.read ? '已读于 ' + formatReadAt(selected.readAt) : '未读'),
-          ),
-          h('div', { key: 'text', style: styles.detailText }, selected.text),
-          h('div', { key: 'fields', style: styles.fields },
-            field('优先级', selected.priority === 'high' ? 'high' : 'normal'),
-            field('来源', selected.source === null ? '—' : selected.source),
-            field('创建', formatReadAt(selected.createdAt)),
-            selected.read ? field('已读', formatReadAt(selected.readAt)) : null,
-          ),
-          selected.read
-            ? null
-            : h('button', {
-              key: 'read',
-              type: 'button',
-              className: 'lbx-ghost',
-              style: styles.action,
-              onClick: () => void active.markRead(selected.id),
-            }, icon('check'), h('span', null, '标记为已读')),
-        ];
-
-      // Rendered as a sibling *behind* the panel, not as its parent: a click on
-      // the drawer never reaches this handler, so "inside" needs no stopPropagation.
-      const scrim = open
-        ? h('div', {
-          style: styles.scrim,
-          'aria-hidden': true,
-          'data-letterbox-scrim': true,
-          onClick: () => setOpen(false),
-        })
-        : null;
-
-      // One pair of columns shared by the floating drawer and the sidebar panel
-      // page, so the two surfaces cannot drift apart.
-      const leftColumn = h('div', { style: { ...styles.left, width: leftWidth, minWidth: leftWidth } },
-            h('div', { style: styles.segment, role: 'tablist', 'aria-label': '收件箱范围' },
-              h('button', {
-                type: 'button',
-                className: 'lbx-tab',
-                role: 'tab',
-                'aria-selected': bucket === 'session',
-                style: bucket === 'session' ? styles.tabActive : styles.tab,
-                onClick: () => switchBucket('session'),
-              }, '会话'),
-              h('button', {
-                type: 'button',
-                className: 'lbx-tab',
-                role: 'tab',
-                'aria-selected': bucket === 'global',
-                style: bucket === 'global' ? styles.tabActive : styles.tab,
-                onClick: () => switchBucket('global'),
-              }, globalUnread > 0 ? '全局 · ' + globalUnread : '全局'),
-            ),
-            h('div', { style: styles.segment, role: 'tablist' },
-              h('button', {
-                type: 'button',
-                className: 'lbx-tab',
-                role: 'tab',
-                'aria-selected': tab === 'unread',
-                style: tab === 'unread' ? styles.tabActive : styles.tab,
-                onClick: () => switchTab('unread'),
-              }, unread > 0 ? '未读 · ' + unread : '未读'),
-              h('button', {
-                type: 'button',
-                className: 'lbx-tab',
-                role: 'tab',
-                'aria-selected': tab === 'history',
-                style: tab === 'history' ? styles.tabActive : styles.tab,
-                onClick: () => switchTab('history'),
-              }, '历史'),
-            ),
-            tab === 'history' && history.loaded
-              ? h('div', { style: styles.pagerCount }, '共 ' + history.total + ' 条')
-              : null,
-            tab === 'history'
-              ? h('div', { style: styles.searchWrap },
-                h('span', { style: styles.searchIcon }, icon('search')),
-                h('input', {
-                  type: 'search',
-                  value: query,
-                  placeholder: '搜索已读：正文 / 来源 / 类型',
-                  'aria-label': '搜索历史条目',
-                  style: styles.search,
-                  onChange: (event) => setQuery(event.target.value),
-                }),
-              )
-              : null,
-            h('div', { style: styles.scroll }, listRows),
-            pager,
-          );
-      const rightColumn = h('div', { style: { ...styles.right, minWidth: narrow ? 260 : 0 } }, detail);
-
-      // The panel page owns no floating surface: it is the drawer's columns in
-      // the layout's main column, so it returns before any portal work.
-      if (!isDock) {
-        return h('div', { style: styles.page },
-          h('div', { style: styles.pageHead },
-            h('span', { style: styles.panelTitle }, '收件箱'),
-            h('span', { style: styles.headCount }, unread > 0 ? unread + ' 条未读' : '全部已读'),
-          ),
-          h('div', { style: styles.body }, leftColumn, rightColumn),
-        );
-      }
-
-      const drawer = open ? h('div', {
-        style: styles.panel,
-        role: 'dialog',
-        'aria-label': '收件箱',
-        'aria-modal': false,
-      },
-        h('div', { style: styles.panelHead },
-          h('span', { style: styles.panelTitle }, '收件箱'),
-          h('span', { style: styles.headCount }, unread > 0 ? unread + ' 条未读' : '全部已读'),
-          h('button', {
-            type: 'button',
-            className: 'lbx-ghost',
-            style: styles.close,
-            onClick: () => setOpen(false),
-            'aria-label': '关闭收件箱',
-          }, icon('x')),
-        ),
-        h('div', { style: styles.body }, leftColumn, rightColumn),
-      ) : null;
-
-      // The sidebar page: same columns, but it lives in the layout main slot,
-      // so it takes the height it is given instead of floating over the app.
-      const page = h('div', { style: styles.page },
-        h('div', { style: styles.pageHead },
-          h('span', { style: styles.panelTitle }, '收件箱'),
-          h('span', { style: styles.headCount }, unread > 0 ? unread + ' 条未读' : '全部已读'),
-        ),
-        h('div', { style: styles.body }, leftColumn, rightColumn),
-      );
-
-      const card = toast === null ? null : h('div', {
+      const card = h('div', {
         style: styles.toast,
         role: 'status',
-        onClick: () => openPanel(toast.id),
+        onClick: openInbox,
         onMouseEnter: () => setToastPaused(true),
         onMouseLeave: () => setToastPaused(false),
       },
         h('div', { style: styles.toastHead },
-          h('span', { style: toast.item.priority === 'high' ? styles.badgeWarn : styles.badge }, kindLabel(toast.item.kind)),
-          h('span', { style: styles.rowTime }, '新条目'),
+          h('span', { style: toast.item.priority === 'high' ? styles.kindBadgeWarn : styles.kindBadge }, kindLabel(toast.item.kind)),
+          h('span', { style: styles.time }, '新条目'),
         ),
         h('div', { style: styles.toastText }, toast.item.text),
         h('div', { style: styles.toastFoot },
@@ -775,49 +909,29 @@ window.__ModuleLoader__.load({
             style: styles.more,
             onClick: (event) => {
               if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-              openPanel(toast.id);
+              openInbox();
             },
           }, icon('arrow-right'), h('span', null, '查看')),
         ),
       );
 
-      // The entry button stays in the composer toolbar; everything that must
-      // escape that subtree is portalled to <body>.
-      const floating = portalHost === null
-        ? null
-        : ReactDOM.createPortal(h(React.Fragment, null, scrim, drawer, card), portalHost);
-
-      return h(React.Fragment, null, dockEntry, floating);
-    }
-
-    /** Stable panel id: the sidebar row's id must equal the main slot's key. */
-    const PANEL_ID = 'letterbox';
-    /** Sits between 自动化任务 (10) and 健康提醒 (40) in the nav column. */
-    const PANEL_ORDER = 30;
-
-    /**
-     * Sidebar glyph. The sidebar owns the button and passes its own size
-     * (16 expanded, 18 collapsed); it resolves the label from our metadata.
-     */
-    function InboxGlyph(props) {
-      return icon('inbox', props?.size ?? 16);
-    }
-
-    /** Page mounted in the layout's keyed `main` slot when the row is active. */
-    function InboxPage(props) {
-      return h(LetterboxDock, { sessions: props?.sessions, variant: 'panel' });
+      return portalHost === null ? null : ReactDOM.createPortal(card, portalHost);
     }
 
     return {
-      inject: ['slots', 'sessions'],
+      inject: ['slots', 'sessions', 'layout'],
       apply(ctx) {
         const sessions = ctx.get('sessions').list;
+        const layout = ctx.get('layout') ?? null;
+        // No drawer any more: this seat is only the toast host, and it renders
+        // null unless a card is due. The registration is what keeps the ledger
+        // polling while the page is open.
         ctx.effect(() => ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
           name: 'conversation.composer.dock',
           id: 'dsh-letterbox',
           order: 60,
-          inject: () => ({ sessions }),
-        }, LetterboxDock)), 'letterbox: composer dock');
+          inject: () => ({ sessions, layout }),
+        }, InboxToastHost)), 'letterbox: toast host');
         // The sidebar row only selects a main panel: layout.selectPanel throws
         // unless a main entry with this key is registered, so both go together.
         ctx.effect(() => ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
@@ -830,7 +944,7 @@ window.__ModuleLoader__.load({
           name: 'main',
           key: PANEL_ID,
           inject: () => ({ sessions }),
-        }, InboxPage)), 'letterbox: main panel');
+        }, InboxPanel)), 'letterbox: main panel');
       },
     };
   },
