@@ -439,9 +439,37 @@ window.__ModuleLoader__.load({
       toastFoot: { display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 6 },
     };
 
-    /** Viewport width, so the drawer can pick its narrow geometry once. */
-
-
+    /**
+     * One page of a bucket's items, newest first.
+     *
+     * Gmail-style paging needs both directions and an exact window, so the host
+     * is asked for limit/offset instead of the whole ledger; reload re-runs the
+     * same window after an acknowledgement.
+     */
+    function usePagedList(sessionId, bucket, scope, query, active, revision) {
+      const [offset, setOffset] = React.useState(0);
+      const [nonce, setNonce] = React.useState(0);
+      const [page, setPage] = React.useState({ items: [], total: 0, offset: 0, limit: PAGE_SIZE, hasMore: false, error: null, loaded: false });
+      const reset = bucket + '|' + scope + '|' + query;
+      React.useEffect(() => { setOffset(0); }, [reset]);
+      React.useEffect(() => {
+        if (!active || sessionId === null) return undefined;
+        let cancelled = false;
+        setPage((previous) => ({ ...previous, loaded: false }));
+        const load = async () => {
+          try {
+            const value = await post('list', { sessionId, bucket, scope, query, limit: PAGE_SIZE, offset });
+            if (!cancelled) setPage({ items: value.items, total: value.total, offset: value.offset, limit: value.limit, hasMore: value.hasMore === true, error: null, loaded: true });
+          } catch (error) {
+            if (!cancelled) setPage((previous) => ({ ...previous, error: String(error && error.message ? error.message : error), loaded: true }));
+          }
+        };
+        void load();
+        return () => { cancelled = true; };
+      }, [sessionId, bucket, scope, query, offset, active, revision, nonce]);
+      const reload = React.useCallback(() => setNonce((value) => value + 1), []);
+      return { ...page, setOffset, reload };
+    }
     /**
      * The inbox page, mounted in the layout's keyed main slot. One header, one
      * label rail, one Gmail-style list with an in-place detail view.
