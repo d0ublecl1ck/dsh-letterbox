@@ -70,6 +70,35 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Whether two polled snapshots describe the same box.
+     *
+     * The poll runs every five seconds whether or not anything changed, and a
+     * fresh object per poll re-renders every consumer - the deck included. Only
+     * the fields a viewer can see are compared: the ids in order, each item's
+     * read flag and answer stamp, and the two counts. A poll that changes nothing
+     * therefore leaves the previous state object in place.
+     *
+     * @param previous - the snapshot already in state.
+     * @param next - the snapshot just fetched.
+     * @returns true when `next` carries no visible change.
+     */
+    function sameSnapshot(previous, next) {
+      if (previous.loaded !== true) return false;
+      if (previous.sessionId !== next.sessionId || previous.bucket !== next.bucket) return false;
+      if (previous.unreadCount !== next.unreadCount || previous.globalUnreadCount !== next.globalUnreadCount) return false;
+      if (previous.items.length !== next.items.length) return false;
+      for (let index = 0; index < next.items.length; index += 1) {
+        const before = previous.items[index];
+        const after = next.items[index];
+        if (before.id !== after.id || before.read !== after.read) return false;
+        const beforeAt = before.answer === null || before.answer === undefined ? null : before.answer.answeredAt;
+        const afterAt = after.answer === null || after.answer === undefined ? null : after.answer.answeredAt;
+        if (beforeAt !== afterAt) return false;
+      }
+      return true;
+    }
+
+    /**
      * One box's snapshot, polled.
      *
      * `bucket` picks the box ('session' or 'global'); `active` lets the panel stop
@@ -87,7 +116,9 @@ window.__ModuleLoader__.load({
         const refresh = async () => {
           try {
             const value = await post('list', { sessionId, bucket });
-            if (!cancelled && alive.current) setLedger({ ...value, error: null, loaded: true });
+            if (!cancelled && alive.current) {
+              setLedger((previous) => (sameSnapshot(previous, value) ? previous : { ...value, error: null, loaded: true }));
+            }
           } catch (error) {
             if (!cancelled && alive.current) setLedger((previous) => ({ ...previous, error: String(error && error.message ? error.message : error), loaded: true }));
           }
@@ -99,13 +130,17 @@ window.__ModuleLoader__.load({
           clearInterval(timer);
         };
       }, [sessionId, bucket, active]);
+      // Returns false instead of throwing: an optimistic caller has already
+      // removed the card and only needs to know whether to put it back.
       const markRead = React.useCallback(async (id) => {
-        if (sessionId === null) return;
+        if (sessionId === null) return false;
         try {
           const value = await post('read', { sessionId, id, bucket });
           setLedger({ ...value, error: null, loaded: true });
+          return true;
         } catch (error) {
           setLedger((previous) => ({ ...previous, error: String(error && error.message ? error.message : error) }));
+          return false;
         }
       }, [sessionId, bucket]);
       return { ...ledger, markRead };
@@ -520,19 +555,18 @@ window.__ModuleLoader__.load({
       // children are absolutely positioned so a card can move between 'stacked'
       // and 'listed' by transform alone, with no layout animation.
       deck: { position: 'fixed', width: 340, pointerEvents: 'none', zIndex: 998 },
+      // Card visuals only: position, height and the stack transform live in the
+      // deck's stylesheet so switching between stack and list is a class swap, not
+      // a re-render of every card.
       deckCard: {
-        position: 'absolute', left: 0, right: 0, bottom: 0, boxSizing: 'border-box',
-        display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 10px',
-        borderRadius: 10, pointerEvents: 'auto', overflow: 'hidden',
+        boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 10px',
+        borderRadius: 10, pointerEvents: 'auto',
         border: '1px solid var(--dsw-alias-border-secondary, rgba(0,0,0,0.12))',
         background: 'var(--dsw-alias-bg-primary, #ffffff)', color: 'inherit', fontSize: 12,
         boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
       },
       deckMeta: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, opacity: 0.62 },
-      deckText: {
-        lineHeight: 1.45, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
-      },
-      deckTextOpen: { lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
+      deckText: { lineHeight: 1.45 },
       deckFoot: { display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap', marginTop: 'auto' },
       deckBtn: {
         fontSize: 11, padding: '2px 8px', border: 'none', borderRadius: 6,
@@ -563,6 +597,18 @@ window.__ModuleLoader__.load({
         color: 'inherit', opacity: 0.7, fontSize: 11, cursor: 'pointer', textAlign: 'left',
       },
       deckError: { fontSize: 11, color: 'var(--dsw-alias-text-warning, #b26a00)' },
+      deckBadge: {
+        position: 'absolute', right: 0, zIndex: 41, padding: '2px 8px', borderRadius: 999,
+        fontSize: 11, cursor: 'pointer', pointerEvents: 'auto',
+        border: '1px solid var(--dsw-alias-border-secondary, rgba(0,0,0,0.16))',
+        background: 'var(--dsw-alias-bg-primary, #ffffff)', color: 'inherit',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.16)',
+      },
+      // Off-screen but still announced: the count changes, the cards never do.
+      srOnly: {
+        position: 'absolute', width: 1, height: 1, margin: -1, padding: 0,
+        overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap', border: 0,
+      },
       // Zero-size flow node inside the composer dock: its rect is the composer's
       // top edge, which is what the deck anchors to.
       probe: { display: 'block', width: 0, height: 0, margin: 0, padding: 0, overflow: 'hidden' },
@@ -992,21 +1038,35 @@ window.__ModuleLoader__.load({
       );
     }
 
-    /** How many cards the deck draws before folding the rest into one line. */
+    /** How many cards the deck draws once it is listed. */
     const DECK_MAX = 8;
-    /** Slot height of one card in the listed state; the stack uses the same box. */
+    /** How many cards the stacked state keeps; the rest become one count. */
+    const DECK_STACK = 3;
+    /** Slot height of one card while stacked. */
     const DECK_SLOT = 96;
-    /** How far each card behind the top one peeks out while stacked. */
+    /** How far each card behind the front one peeks out while stacked. */
     const DECK_PEEK = 3;
+    /** Hover is a preview, not a commitment: expand after the pointer settles... */
+    const DECK_HOVER_IN_MS = 120;
+    /** ...and collapse only after it has really left. */
+    const DECK_HOVER_OUT_MS = 200;
     /**
-     * The only stylesheet the deck needs: swapping the stack for the list is a
-     * relayout, not a transform, so the transition is a 120ms opacity fade on the
-     * list itself. The panel owns the big sheet; this one is injected by the deck
-     * because the deck can mount while the panel has never been opened.
+     * The deck's stylesheet. It owns everything that differs between the two
+     * layouts - position, height, the stack offsets, the text clamp - so a hover
+     * only swaps a class on the container and React never re-renders a card for a
+     * visual state. The panel's big sheet is not reused: it exists only while the
+     * panel is mounted, and the deck can be up with the panel never opened.
      */
     const DECK_STYLE_TEXT = '@keyframes lbx-deck-fade{from{opacity:0}to{opacity:1}}'
       + '.lbx-deck-fade{animation:lbx-deck-fade 120ms ease}'
-      + '@media (prefers-reduced-motion: reduce){.lbx-deck-fade{animation:none}}';
+      + '.lbx-deck-stack .lbx-card{position:absolute;left:0;right:0;bottom:0;min-height:' + String(DECK_SLOT) + 'px;max-height:' + String(DECK_SLOT) + 'px;overflow:hidden;transition:transform 180ms ease,opacity 180ms ease}'
+      + '.lbx-deck-stack .lbx-card:nth-child(1){transform:none;opacity:1;z-index:40}'
+      + '.lbx-deck-stack .lbx-card:nth-child(2){transform:translateY(-' + String(DECK_PEEK) + 'px) scale(0.98);opacity:0.9;z-index:39}'
+      + '.lbx-deck-stack .lbx-card:nth-child(3){transform:translateY(-' + String(DECK_PEEK * 2) + 'px) scale(0.96);opacity:0.8;z-index:38}'
+      + '.lbx-deck-list .lbx-card{position:relative}'
+      + '.lbx-deck-stack .lbx-card-text{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}'
+      + '.lbx-deck-list .lbx-card-text{white-space:pre-wrap;word-break:break-word}'
+      + '@media (prefers-reduced-motion: reduce){.lbx-deck-fade{animation:none}.lbx-deck-stack .lbx-card{transition:none}}';
 
     /**
      * Where the deck lives: the sidebar's right edge and the composer's top.
@@ -1083,41 +1143,162 @@ window.__ModuleLoader__.load({
       return anchor;
     }
 
+    /** No options: one shared empty array, so a card without options keeps its props. */
+    const NO_OPTIONS = [];
+
+    /**
+     * One card in the deck.
+     *
+     * Memoised on primitive props: hovering only swaps a class on the container,
+     * so the cards must not re-render for it. Everything the two layouts disagree
+     * about (position, height, stack offset, text clamp) is CSS keyed off the
+     * container (`.lbx-deck-stack` / `.lbx-deck-list`), which is why this
+     * component takes no layout props at all.
+     */
+    const DeckCard = React.memo(function DeckCard(props) {
+      const { id, text, kind, priority, createdAt, options, busy, locked, replyOpen, onRead, onReply, onAnswer, onSend, onPin, onToggle } = props;
+      const dim = locked && !busy ? 0.5 : 1;
+      const meta = kindLabel(kind) + (priority === 'high' ? ' · 高' : '') + ' · ' + formatClock(createdAt);
+      const stop = (event) => {
+        if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+      };
+
+      const button = (label, onClick) => h('button', {
+        type: 'button',
+        className: 'lbx-ghost',
+        style: { ...styles.deckBtn, opacity: dim },
+        disabled: locked,
+        onClick: (event) => {
+          stop(event);
+          onClick();
+        },
+      }, label);
+
+      const foot = replyOpen
+        ? h(DeckReply, { id, locked, onSend })
+        : h('div', { style: styles.deckFoot },
+          (options === undefined ? NO_OPTIONS : options).map((option) => h('button', {
+            key: option,
+            type: 'button',
+            className: 'lbx-ghost',
+            style: { ...styles.deckOption, opacity: dim },
+            disabled: locked,
+            onClick: (event) => {
+              stop(event);
+              onAnswer(id, option);
+            },
+          }, option)),
+          button('已读', () => onRead(id)),
+          button('回复', () => onReply(id)),
+        );
+
+      return h('div', {
+        className: 'lbx-card',
+        style: styles.deckCard,
+        'data-card': id,
+        // The body is focusable on purpose: touch and keyboard have no hover, so
+        // Enter / Space is their way into the list.
+        tabIndex: 0,
+        role: 'button',
+        onClick: (event) => {
+          stop(event);
+          onPin();
+        },
+        onKeyDown: (event) => {
+          if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return;
+          event.preventDefault();
+          onToggle();
+        },
+      },
+        h('div', { style: styles.deckMeta }, meta),
+        h('div', { className: 'lbx-card-text', style: styles.deckText }, text),
+        foot,
+      );
+    });
+
+    /**
+     * The one-line reply box. It keeps the draft locally so typing re-renders the
+     * input and nothing else - the deck and its other cards stay untouched.
+     */
+    const DeckReply = React.memo(function DeckReply(props) {
+      const { id, locked, onSend } = props;
+      const [draft, setDraft] = React.useState('');
+      const send = () => {
+        const value = draft.trim();
+        if (value === '') return;
+        onSend(id, value);
+      };
+      const stop = (event) => {
+        if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+      };
+      return h('div', { style: styles.deckFoot },
+        h('input', {
+          type: 'text',
+          style: styles.deckReply,
+          value: draft,
+          disabled: locked,
+          autoFocus: true,
+          placeholder: '回复一句…',
+          'aria-label': '回复这条笔记',
+          onChange: (event) => setDraft(event.target.value),
+          onClick: stop,
+          onKeyDown: (event) => {
+            if (event.key !== 'Enter') return;
+            event.preventDefault();
+            send();
+          },
+        }),
+        h('button', {
+          type: 'button',
+          className: 'lbx-ghost',
+          style: styles.deckBtn,
+          disabled: locked,
+          onClick: (event) => {
+            stop(event);
+            send();
+          },
+        }, '发送'),
+      );
+    });
+
     /**
      * The quick-reply deck, mounted in the composer dock.
      *
      * Every unread note of this Session stays on screen as a card until the human
-     * acts on it: nothing here times out. The cards overlap into a stack by
-     * default and turn into a list while the pointer is over the deck, which is
-     * the whole reason a card can be answered without opening the inbox panel.
+     * acts on it: nothing here times out. One note is drawn whole, two form a
+     * light stack, three or more stack three deep and fold the rest into a count.
+     * A pointer that settles on the deck previews the list; a click, a Tab into it
+     * or starting a reply pins that list open. Esc or a tap outside lets it go.
      *
-     * The two states are two layouts of the same nodes, not two components: the
-     * stack pins every card to a fixed slot and clamps the text, the list hands
-     * the height back to the content so the full note is readable, capped at 60vh
-     * with its own scroller. Only the stack animates position (transform); the
-     * swap into the list is a 120ms opacity fade, because animating a height is
-     * exactly what breaks a list that is supposed to show everything.
+     * Everything the human clicks is optimistic: the card leaves at once and only
+     * comes back if the host refuses the write, so no action ever looks ignored
+     * while a request is in flight.
      *
-     * Performance rules: one poll (the existing useLedger), no timers, at most
-     * DECK_MAX cards, and a card is four nodes plus its buttons. Nothing plays at
-     * all when the platform asks for reduced motion.
+     * Performance rules: one poll (the existing useLedger, now deduped), no
+     * standing timers - the two hover delays live only between a pointer event and
+     * its effect and are cleared on unmount - at most DECK_MAX cards, memoised
+     * cards, and no per-hover style building. Nothing plays under reduced motion.
      */
     function CardDeck({ sessions, layout }) {
       const sessionId = useSessionId(sessions);
       const ledger = useLedger(sessionId, 'session', true);
       const probeRef = React.useRef(null);
+      const deckRef = React.useRef(null);
       const anchor = useDeckAnchor(probeRef);
       const [portalHost, setPortalHost] = React.useState(null);
       const [hovered, setHovered] = React.useState(false);
-      // Touch has no hover: tapping a stacked card flips this, and tapping again
-      // puts the deck back into the stack.
-      const [opened, setOpened] = React.useState(false);
+      // Pinned = the list stays open regardless of the pointer: set by a click, a
+      // Tab into the deck, or starting a reply; cleared by Esc or a tap outside.
+      const [pinned, setPinned] = React.useState(false);
       const [replyId, setReplyId] = React.useState(null);
-      const [draft, setDraft] = React.useState('');
       const [busyId, setBusyId] = React.useState(null);
       const [doneIds, setDoneIds] = React.useState([]);
       const [error, setError] = React.useState(null);
       const [reduced, setReduced] = React.useState(false);
+      const [announcement, setAnnouncement] = React.useState('');
+      const enterTimer = React.useRef(0);
+      const leaveTimer = React.useRef(0);
+      const restoreFocus = React.useRef(false);
 
       // The deck is portalled to <body>: inside the composer subtree a transformed
       // ancestor would both trap position:fixed and create a stacking context
@@ -1163,51 +1344,151 @@ window.__ModuleLoader__.load({
       // after a successful answer - waiting for the next poll would leave a card
       // the human already answered sitting on screen for five seconds.
       const unread = ledger.items.filter((item) => !item.read && doneIds.indexOf(item.id) === -1);
+      const total = unread.length;
       const shown = unread.slice(0, DECK_MAX);
-      const rest = unread.length - shown.length;
-      const pinned = opened || replyId !== null;
+      const rest = total - shown.length;
       const listed = hovered || pinned;
+      // One note has nothing to stack against, so it is always drawn whole.
+      const flow = listed || total === 1;
+      const stacked = unread.slice(0, DECK_STACK);
+      const badgeCount = flow ? 0 : total - stacked.length;
 
-      // Answering the last card unmounts the deck, and a mouseleave that never
-      // happens would leave 'hovered' or 'opened' behind: the next card would then
+      // Screen readers hear one sentence per count change, never one per card.
+      const announced = React.useRef(null);
+      React.useEffect(() => {
+        if (announced.current === total) return;
+        const previous = announced.current;
+        announced.current = total;
+        if (total === 0) return;
+        // The first load is the whole count; a later grow is the delta.
+        setAnnouncement(previous === null || previous === 0
+          ? '共 ' + String(total) + ' 条未读'
+          : (total > previous ? '新增 ' + String(total - previous) + ' 条未读' : '共 ' + String(total) + ' 条未读'));
+      }, [total]);
+
+      // Answering the last card unmounts the deck, and a pointerleave that never
+      // happens would leave 'hovered' or 'pinned' behind: the next card would then
       // appear already listed. Drop every pointer-driven state when the ids change.
       const shownKey = shown.map((item) => item.id).join(',');
       React.useEffect(() => {
         const ids = shownKey === '' ? [] : shownKey.split(',');
-        if (replyId !== null && ids.indexOf(replyId) === -1) {
-          setReplyId(null);
-          setDraft('');
-        }
+        if (replyId !== null && ids.indexOf(replyId) === -1) setReplyId(null);
         if (ids.length === 0) {
           setHovered(false);
-          setOpened(false);
+          setPinned(false);
         }
       }, [shownKey, replyId]);
 
-      const finish = (id) => setDoneIds((previous) => (previous.indexOf(id) === -1 ? previous.concat(id) : previous));
-
-      const markOne = (id) => {
-        if (busyId !== null) return;
-        setBusyId(id);
-        setError(null);
-        Promise.resolve(ledger.markRead(id)).finally(() => setBusyId(null));
-      };
-
-      const postAnswer = async (id, body) => {
-        if (busyId !== null) return;
-        setBusyId(id);
-        setError(null);
-        try {
-          await post('answer', { sessionId, id, ...body });
-          finish(id);
-          setReplyId(null);
-          setDraft('');
-        } catch {
-          setError('提交失败，请重试');
-        } finally {
-          setBusyId(null);
+      // Dismissing the last card removes the node the human was standing on. If it
+      // held the focus, hand it back to the composer instead of leaving it on
+      // <body> - measured at action time, because by then the node is already gone.
+      const wasShown = React.useRef(false);
+      React.useEffect(() => {
+        const visible = shown.length > 0;
+        if (wasShown.current && !visible && restoreFocus.current) {
+          restoreFocus.current = false;
+          const target = typeof document === 'undefined' ? null : document.querySelector('textarea, [contenteditable=""], [contenteditable="true"]');
+          if (target !== null && typeof target.focus === 'function') target.focus();
         }
+        wasShown.current = visible;
+      }, [shown.length]);
+
+      // Outside tap and Esc are only listened for while the list is pinned; the
+      // listeners come off with the pin.
+      React.useEffect(() => {
+        if (!pinned || typeof document === 'undefined') return undefined;
+        const onDown = (event) => {
+          const root = deckRef.current;
+          if (root !== null && event.target !== null && root.contains(event.target)) return;
+          setPinned(false);
+          setHovered(false);
+        };
+        const onKey = (event) => {
+          if (event.key !== 'Escape') return;
+          setPinned(false);
+          setHovered(false);
+        };
+        document.addEventListener('pointerdown', onDown, true);
+        document.addEventListener('keydown', onKey);
+        return () => {
+          document.removeEventListener('pointerdown', onDown, true);
+          document.removeEventListener('keydown', onKey);
+        };
+      }, [pinned]);
+
+      React.useEffect(() => () => {
+        if (enterTimer.current !== 0) window.clearTimeout(enterTimer.current);
+        if (leaveTimer.current !== 0) window.clearTimeout(leaveTimer.current);
+      }, []);
+
+      const clearTimer = (ref) => {
+        if (ref.current === 0) return;
+        window.clearTimeout(ref.current);
+        ref.current = 0;
       };
+
+      // Hovering is a preview, not a commitment: expand only after the pointer has
+      // settled, and collapse only after it has really left.
+      const onPointerEnter = () => {
+        clearTimer(leaveTimer);
+        if (listed || total < 2) return;
+        clearTimer(enterTimer);
+        enterTimer.current = window.setTimeout(() => {
+          enterTimer.current = 0;
+          setHovered(true);
+        }, DECK_HOVER_IN_MS);
+      };
+
+      const onPointerLeave = () => {
+        clearTimer(enterTimer);
+        if (pinned) return;
+        clearTimer(leaveTimer);
+        leaveTimer.current = window.setTimeout(() => {
+          leaveTimer.current = 0;
+          setHovered(false);
+        }, DECK_HOVER_OUT_MS);
+      };
+
+      // Remember whether the human was standing on the deck before it disappears.
+      const noteFocus = React.useCallback(() => {
+        const root = deckRef.current;
+        restoreFocus.current = root !== null && root.contains(document.activeElement);
+      }, []);
+
+      // Optimistic: the card goes now, the request follows. A refusal puts the
+      // card back and says so - never a spinner over a card that is still there.
+      const onRead = React.useCallback((id) => {
+        noteFocus();
+        setDoneIds((previous) => previous.concat(id));
+        setBusyId(id);
+        setError(null);
+        void Promise.resolve(ledger.markRead(id)).then((ok) => {
+          if (ok !== false) return;
+          setDoneIds((previous) => previous.filter((value) => value !== id));
+          setError('标记失败，卡片已恢复');
+        }).finally(() => setBusyId(null));
+      }, [ledger.markRead, noteFocus]);
+
+      const answer = React.useCallback((id, body) => {
+        noteFocus();
+        setDoneIds((previous) => previous.concat(id));
+        setReplyId((previous) => (previous === id ? null : previous));
+        setBusyId(id);
+        setError(null);
+        void post('answer', { sessionId, id, ...body }).then(() => {}).catch(() => {
+          setDoneIds((previous) => previous.filter((value) => value !== id));
+          setError('提交失败，卡片已恢复');
+        }).finally(() => setBusyId(null));
+      }, [sessionId, noteFocus]);
+
+      const onAnswer = React.useCallback((id, choice) => answer(id, { choice }), [answer]);
+      const onSend = React.useCallback((id, note) => answer(id, { note }), [answer]);
+      const onReply = React.useCallback((id) => {
+        setReplyId(id);
+        setPinned(true);
+      }, []);
+      const onPin = React.useCallback(() => setPinned(true), []);
+      const onToggle = React.useCallback(() => setPinned((value) => !value), []);
 
       const openInbox = () => {
         try {
@@ -1217,125 +1498,74 @@ window.__ModuleLoader__.load({
         }
       };
 
-      const renderCard = (item, index) => {
-        const busy = busyId === item.id;
-        const locked = busyId !== null;
-        const dim = locked && !busy ? 0.5 : 1;
-        // Two layouts, one node. Stacked keeps a fixed slot so the cards can peek
-        // at each other; listed hands the height back to the content, which is the
-        // whole point of listing it.
-        const style = listed
-          ? { ...styles.deckCard, position: 'relative', minHeight: 0 }
-          : {
-            ...styles.deckCard,
-            transform: 'translateY(' + String(-index * DECK_PEEK) + 'px) scale(' + String(1 - Math.min(index, 5) * 0.02) + ')',
-            opacity: index === 0 ? 1 : 0.92,
-            zIndex: 40 - index,
-            minHeight: DECK_SLOT,
-            maxHeight: DECK_SLOT,
-          };
-        if (!reduced && !listed) style.transition = 'transform 180ms ease, opacity 180ms ease';
-
-        const button = (label, onClick) => h('button', {
-          type: 'button',
-          className: 'lbx-ghost',
-          style: { ...styles.deckBtn, opacity: dim },
-          disabled: locked,
-          onClick: (event) => {
-            if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-            onClick();
-          },
-        }, label);
-
-        const foot = replyId === item.id
-          ? h('div', { style: styles.deckFoot },
-            h('input', {
-              type: 'text',
-              style: styles.deckReply,
-              value: draft,
-              disabled: locked,
-              placeholder: '回复一句…',
-              'aria-label': '回复这条笔记',
-              onChange: (event) => setDraft(event.target.value),
-              onKeyDown: (event) => {
-                if (event.key !== 'Enter') return;
-                event.preventDefault();
-                if (draft.trim() !== '') void postAnswer(item.id, { note: draft });
-              },
-            }),
-            button('发送', () => { if (draft.trim() !== '') void postAnswer(item.id, { note: draft }); }),
-          )
-          : h('div', { style: styles.deckFoot },
-            (item.options ?? []).map((option) => h('button', {
-              key: option,
-              type: 'button',
-              className: 'lbx-ghost',
-              style: { ...styles.deckOption, opacity: dim },
-              disabled: locked,
-              onClick: (event) => {
-                if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-                void postAnswer(item.id, { choice: option });
-              },
-            }, option)),
-            button('已读', () => markOne(item.id)),
-            button('回复', () => {
-              setReplyId(item.id);
-              setDraft('');
-              setOpened(true);
-            }),
-          );
-
-        const meta = kindLabel(item.kind) + (item.priority === 'high' ? ' · 高' : '') + ' · ' + formatClock(item.createdAt);
-
-        return h('div', {
-          key: item.id,
-          style,
-          'data-card': item.id,
-          // Touch has no hover: a tap on a stacked card lists the deck, and a tap
-          // on a card that was opened this way puts it back.
-          onClick: () => {
-            if (!listed) setOpened(true);
-            else if (opened) setOpened(false);
-          },
-        },
-          h('div', { style: styles.deckMeta }, meta),
-          h('div', { style: listed ? styles.deckTextOpen : styles.deckText }, item.text),
-          foot,
-        );
-      };
+      const cards = (flow ? shown : stacked).map((item) => h(DeckCard, {
+        key: item.id,
+        id: item.id,
+        text: item.text,
+        kind: item.kind,
+        priority: item.priority,
+        createdAt: item.createdAt,
+        options: item.options === undefined ? NO_OPTIONS : item.options,
+        busy: busyId === item.id,
+        locked: busyId !== null,
+        replyOpen: replyId === item.id,
+        onRead,
+        onReply,
+        onAnswer,
+        onSend,
+        onPin,
+        onToggle,
+      }));
 
       const probe = h('span', { ref: probeRef, style: styles.probe, 'aria-hidden': true });
-      const deck = anchor === null || portalHost === null || shown.length === 0 ? null : ReactDOM.createPortal(h('div', {
+      const live = h('div', { role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true', style: styles.srOnly }, announcement);
+      const deck = anchor === null || portalHost === null || total === 0 ? null : ReactDOM.createPortal(h('div', {
+        ref: deckRef,
         style: {
           ...styles.deck,
           left: anchor.left + 12,
           bottom: anchor.bottom,
-          // The box itself only answers the pointer while it is being used: an
-          // always-on transparent rectangle over the conversation would swallow
-          // clicks that were never meant for the deck.
-          pointerEvents: hovered ? 'auto' : 'none',
+          // Only a pinned deck owns the pointer: an always-on transparent
+          // rectangle over the conversation would swallow clicks that were never
+          // meant for the deck.
+          pointerEvents: pinned ? 'auto' : 'none',
         },
-        onMouseEnter: () => setHovered(true),
-        onMouseLeave: () => setHovered(false),
+        onPointerEnter,
+        onPointerLeave,
+        onFocus: () => setPinned(true),
       },
-        h('div', {
-          className: listed && !reduced ? 'lbx-deck-fade' : undefined,
-          style: listed ? styles.deckList : styles.deckStack,
-        },
-          shown.map(renderCard),
-          listed && rest > 0 ? h('button', {
-            type: 'button',
-            className: 'lbx-ghost',
-            style: styles.deckMore,
-            onClick: openInbox,
-          }, '还有 ' + String(rest) + ' 条') : null,
-          error === null ? null : h('div', {
-            style: listed ? styles.deckError : { ...styles.deckError, position: 'absolute', left: 0, bottom: DECK_SLOT + 6 },
-          }, error),
-        ),
+        flow
+          ? h('div', {
+            className: listed && !reduced ? 'lbx-deck-fade' : undefined,
+            style: styles.deckList,
+          },
+            cards,
+            rest > 0 ? h('button', {
+              type: 'button',
+              className: 'lbx-ghost',
+              style: styles.deckMore,
+              onClick: openInbox,
+            }, '还有 ' + String(rest) + ' 条') : null,
+            error === null ? null : h('div', { style: styles.deckError }, error),
+          )
+          : h('div', { style: styles.deckStack },
+            cards,
+            error === null ? null : h('div', {
+              style: { ...styles.deckError, position: 'absolute', left: 0, bottom: DECK_SLOT + 6 },
+            }, error),
+            badgeCount > 0 ? h('button', {
+              type: 'button',
+              className: 'lbx-ghost',
+              style: { ...styles.deckBadge, bottom: DECK_SLOT + DECK_PEEK * Math.max(stacked.length - 1, 0) + 6 },
+              onClick: (event) => {
+                if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+                openInbox();
+              },
+            }, '还有 ' + String(badgeCount) + ' 条') : null,
+          ),
       ), portalHost);
 
-      return h(React.Fragment, null, probe, deck);
+      return h(React.Fragment, null, probe, live, deck);
     }
 
     return {

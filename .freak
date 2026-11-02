@@ -13,8 +13,13 @@
 - [ ] 侧栏角标（`useUnreadBadge`）与左下角卡片组（`CardDeck` 复用 `useLedger`）各自 5s 轮询同一个 `/letterbox/list`，每 5 秒两次轻请求是刻意的现状；要合并必须改结构，别顺手改。记录：2026-11-02
 - [ ] 详情页操作行（标记为已读 / 上一封 / 下一封）现在在正文下方、字段表上方；再动详情或列表布局时，同时核对 `styles.actionRow` 与 README「用法」里那段详情描述。记录：2026-11-02
 - [ ] 卡片组定位靠 `useDeckAnchor`：左缘 = 应用 frame（`[data-shell-bottom]` 的父元素）`rect.left` + 计算样式 `grid-template-columns` 的第一条轨道；`data-sidebar-collapsed` 只在折叠态存在于 frame 上，不能当主锚点。bottom = composer dock 里那个 0 尺寸探针的 `top` + 12。真机验收时在展开态、折叠态、窗口缩放各确认一次这两个数，否则卡片会跑到侧栏上或压住输入框。记录：2026-11-02
-- [ ] 卡片两种布局共用同一批节点：叠放态 `position:absolute` + `translateY(-index*3px) scale(1-index*0.02)`、`minHeight/maxHeight = DECK_SLOT(96)` + 两行截断；列表态改成 `position:relative`、高度由内容决定、正文不截断。`DECK_SLOT` 现在只管叠放态，列表态不再用它算位移，改卡片内容高度不会影响列表排布。记录：2026-11-02
+- [ ] 卡片两种布局共用同一批节点：叠放态 `position:absolute` + `minHeight/maxHeight = DECK_SLOT(96)` + 两行截断；列表态 `position:relative`、高度由内容决定、正文不截断。位移/透明度/截断全部写在卡片组自己注入的样式表里（`.lbx-deck-stack .lbx-card:nth-child(n)` / `.lbx-deck-list .lbx-card`），`DECK_SLOT`、`DECK_PEEK` 通过模板串拼进 CSS，改这两个常量前先确认 CSS 也跟着变。记录：2026-11-02
 - [ ] 列表态容器是 `styles.deckList`（flex column、`maxHeight: 60vh`、`overflowY: auto`），卡片在里面走正常文档流；不要再引入按 `DECK_SLOT` 算的 transform 位移，否则正文会被压回固定槽高。切换只有 `.lbx-deck-fade` 的 120ms 淡入，这段样式由卡片组自己注入（面板那份 `STYLE_TEXT` 只在面板挂载时存在，卡片组不能依赖它）。记录：2026-11-02
-- [ ] 卡片上只有三类按钮：选项（有 options 时）、已读、回复；「展开 / 收起」按钮与 `openId` 状态已删除，叠放态点击卡片主体是触屏的展开替代（`opened` 态）。别再把它加回来。记录：2026-11-02
-- [ ] 卡片组上限 `DECK_MAX = 8`，其余折成「还有 N 条」（只在展开态出现，已与需求方确认，别改成常显）；`prefers-reduced-motion` 下所有过渡直接关闭。卡片节点数超过 10 是已确认的例外：选项按钮必须逐项真实渲染，别再为凑节点数把它们藏进二级菜单。记录：2026-11-02
+- [ ] 卡片上只有三类按钮：选项（有 options 时）、已读、回复；「展开 / 收起」按钮与 `openId` 状态已删除。展开由 `pinned` 管：click / focusin / 开始回复把它置真，Esc 或组外 pointerdown 置假，外部监听只在 pinned 期间挂。别再按卡片记 openId，也别把展开按钮加回来。记录：2026-11-02
+- [ ] 叠放态渲染几张是硬口径：1 条不叠（直接完整卡片）、2 条叠 2 张、3 条及以上只叠 `DECK_STACK = 3` 张（透明度 1/0.9/0.8），超出部分折成叠放组右上角常驻的「还有 N 条」角标；展开后最多 `DECK_MAX = 8` 张，其余是列表末尾一行「还有 N 条」。叠放态 DOM 里真的只有 3 张卡，hover 展开时才挂载其余卡片，别改成「渲染 8 张再隐藏」。`prefers-reduced-motion` 下所有过渡直接关闭。卡片节点数超过 10 是已确认的例外：选项按钮必须逐项真实渲染，别再为凑节点数把它们藏进二级菜单。记录：2026-11-02
 - [ ] 答复走认证路由 `POST /letterbox/answer`（choice 或 note），答复与已读在同一写操作里完成；卡片成功后用本地 `doneIds` 立即移除，不等 5s 轮询。模型侧的 `letterbox_answer` 只读，别再给它加写能力。记录：2026-11-02
+- [ ] 卡片操作是乐观更新：先 `setDoneIds` 移除、再发请求，失败把 id 从 `doneIds` 里移除并显示一行错误；`useLedger` 的 `markRead` 因此返回 boolean（宿主拒绝时给 false）。别把它改成「等响应回来再移除卡片」。记录：2026-11-02
+- [ ] 卡片是 `React.memo` + 模块级 style 常量，hover 只切容器的 `lbx-deck-stack` / `lbx-deck-list` class；卡片不接收任何布局态 prop（`listed`/`flow` 都不要传），否则每次 hover 8 张卡全重建。`options` 是唯一非原始值 prop，靠快照去重保持引用稳定。记录：2026-11-02
+- [ ] `useLedger` 的轮询会做快照等价比较（items 的 id 序列 + read + answer.answeredAt + 两个 count），相同就不 `setState`；改 `toPublicItem` 字段时要同步更新 `sameSnapshot`，否则卡片组每 5 秒白重渲染一次。记录：2026-11-02
+- [ ] 卡片组与 `InboxPanel` 没有共享 state：卡组只用 `useLedger(sessionId,'session')` 与 `layout.selectPanel`，面板的列表/详情/搜索状态不会触发卡组重渲染。改这块时别把两者的状态提到同一个 provider。记录：2026-11-02
+- [ ] 焦点回填：最后一个卡片被处理掉、卡组消失时，如果 action 发生的瞬间 focus 还在组内（节点已卸载，只能在那时记录），把焦点送回页面的 `textarea` 或 `[contenteditable]`。记录：2026-11-02
