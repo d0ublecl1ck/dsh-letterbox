@@ -450,24 +450,27 @@ function deckClamp() {
     assert.notEqual(match, null, 'client.js must define ' + name);
     return Number(match[1]);
   };
-  return new Function('DECK_WIDTH', 'DECK_GUTTER', 'DECK_FALLBACK_TOP', 'return (' + body + ');')(
+  return new Function('DECK_WIDTH', 'DECK_GUTTER', 'DECK_FALLBACK_TOP', 'DECK_TOP_OFFSET', 'return (' + body + ');')(
     numberConst('DECK_WIDTH'),
     numberConst('DECK_GUTTER'),
     numberConst('DECK_FALLBACK_TOP'),
+    numberConst('DECK_TOP_OFFSET'),
   );
 }
 
-test('clampDeckAnchor hangs the list off the content area top-left corner', () => {
+test('clampDeckAnchor clears the top bar before the list starts', () => {
   const clamp = deckClamp();
+  const offset = Number(/const DECK_TOP_OFFSET = ([0-9.]+);/.exec(readFileSync(new URL('../client.js', import.meta.url), 'utf8'))[1]);
+  assert.equal(offset, 300, 'the list is pushed 300px down by product decision');
   const anchor = clamp({ frameLeft: 0, frameTop: 0, frameHeight: 900, sidebarWidth: 280, viewportWidth: 1440, viewportHeight: 900 });
-  assert.deepEqual(anchor, { left: 292, top: 12, maxHeight: 540, source: 'frame' });
+  assert.deepEqual(anchor, { left: 292, top: 312, maxHeight: 540, source: 'frame' });
 });
 
 test('clampDeckAnchor follows the frame down when the window has a titlebar', () => {
   const clamp = deckClamp();
   const anchor = clamp({ frameLeft: 0, frameTop: 40, frameHeight: 860, sidebarWidth: 280, viewportWidth: 1440, viewportHeight: 900 });
-  assert.equal(anchor.top, 52, 'frame top plus the 12px gutter');
-  assert.equal(anchor.maxHeight, 540, 'still capped at 60% of the window');
+  assert.equal(anchor.top, 352, 'frame top + offset + gutter');
+  assert.equal(anchor.maxHeight, 536, 'the list gives up the pixels the offset took');
 });
 
 test('clampDeckAnchor falls back when the frame cannot be measured', () => {
@@ -475,8 +478,8 @@ test('clampDeckAnchor falls back when the frame cannot be measured', () => {
   const anchor = clamp({ frameLeft: Number.NaN, frameTop: Number.NaN, frameHeight: 0, sidebarWidth: Number.NaN, viewportWidth: 1200, viewportHeight: 800 });
   assert.equal(anchor.source, 'fallback');
   assert.equal(anchor.left, 12);
-  assert.equal(anchor.top, 88, 'fallback top plus the gutter');
-  assert.equal(anchor.maxHeight, 480, '60% of an 800px window');
+  assert.equal(anchor.top, 388, 'fallback top + offset + gutter');
+  assert.equal(anchor.maxHeight, 400, 'what is left of an 800px window');
 });
 
 test('clampDeckAnchor keeps the list inside the viewport on both axes', () => {
@@ -487,4 +490,8 @@ test('clampDeckAnchor keeps the list inside the viewport on both axes', () => {
   assert.equal(low.top, 768, 'top stops leaving 120px of list on screen');
   assert.equal(low.maxHeight, 120);
   assert.equal(low.top + low.maxHeight, 900 - 12, 'the list never runs past the bottom gutter');
+  const short = clamp({ frameLeft: 0, frameTop: 0, frameHeight: 400, sidebarWidth: 280, viewportWidth: 1440, viewportHeight: 400 });
+  assert.equal(short.top, 268, 'the offset gives way when it would leave no list on screen');
+  assert.equal(short.maxHeight, 120, 'a short window shrinks the list instead of overflowing');
+  assert.equal(short.top + short.maxHeight, 400 - 12);
 });

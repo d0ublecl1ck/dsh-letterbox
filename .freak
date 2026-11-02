@@ -17,3 +17,4 @@
 - [ ] 状态条归属：截图里那条「Magpie · DeepSeek-V4.1-Flash · 本会话」是 `dsh-bottom-info-bar@1.21.10` 注册进 `conversation.composer.dock` 的（`lib/client.js:3392` 调 `slots.register`，`3394` 行 `{ name: 'conversation.composer.dock', id: 'stats', priority: -1000 }`），**不是** `shell.bottom`；整个 profile 没有任何包填 `shell.bottom`，所以 `[data-shell-bottom]` 高度恒为 0。记录：2026-11-02
 - [ ] 保留的机制：乐观更新（先 `setDoneIds` 再发请求，失败回滚并提示）、`useLedger` 的快照等价去重 + `markRead` 返回 boolean、`DeckCard`/`DeckReply` 的 `React.memo` 与模块级 style、`aria-live` 只播数量、卡组消失时的焦点回填、`prefers-reduced-motion` 下关过渡。改动时别退回去。记录：2026-11-02
 - [ ] 卡组 portal 宿主 `z-index` 是 2147480000；容器本身现在就是列表，直接吃指针事件（不再有 hover 才开的那套）。记录：2026-11-02
+- [ ] 列表顶部的 `DECK_TOP_OFFSET = 300` 是用户口径（避开顶栏/标题区），不是测量值：钳制时 `rawTop = frameTop + DECK_TOP_OFFSET + 12`，再被 `lowestTop = 窗口高 - 12 - 120` 压回，所以矮窗口先牺牲下移量、再收缩高度，始终留 120px 列表可见。调这个数要同步 README「常驻卡组」与 test/store.test.mjs 的 clamp 期望值。记录：2026-11-02

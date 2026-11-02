@@ -1034,6 +1034,12 @@ window.__ModuleLoader__.load({
     const DECK_FALLBACK_TOP = 76;
     /** Gutter the list always leaves free at the right and bottom edges. */
     const DECK_GUTTER = 12;
+    /**
+     * How far the list is pushed down from the content area's top edge. The human
+     * asked for ~300px so the list clears the top bar / title zone; it is a taste
+     * knob rather than a measurement - change it here and the clamp tests follow.
+     */
+    const DECK_TOP_OFFSET = 300;
     /** Flip to true to log one anchor measurement per mount. */
     const DECK_DEBUG = false;
 
@@ -1063,7 +1069,7 @@ window.__ModuleLoader__.load({
       const left = Math.max(DECK_GUTTER, Math.min(rawLeft, viewportWidth - DECK_GUTTER - DECK_WIDTH));
 
       const frameUsable = Number.isFinite(input.frameTop) && Number.isFinite(input.frameHeight) && input.frameHeight > 0;
-      const rawTop = (frameUsable ? input.frameTop : DECK_FALLBACK_TOP) + DECK_GUTTER;
+      const rawTop = (frameUsable ? input.frameTop : DECK_FALLBACK_TOP) + DECK_TOP_OFFSET + DECK_GUTTER;
       // Leave at least 120px of list on screen before giving up on the anchor.
       const lowestTop = Math.max(DECK_GUTTER, viewportHeight - DECK_GUTTER - 120);
       const top = Math.max(DECK_GUTTER, Math.min(rawTop, lowestTop));
