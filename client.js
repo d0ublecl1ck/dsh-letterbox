@@ -23,7 +23,6 @@ window.__ModuleLoader__.load({
     const POLL_MS = 5000;
     const SEARCH_DEBOUNCE_MS = 250;
     const PAGE_SIZE = 20;
-    const TOAST_MS = 8000;
 
     /** The conversation the main view is showing, or null. */
     function currentSessionId(list) {
@@ -329,7 +328,7 @@ window.__ModuleLoader__.load({
       return count > 99 ? '99+' : String(count);
     }
 
-    /** Kind badges shared by rows, the detail head and the toast card. */
+    /** Kind badges shared by rows, the detail head and the deck cards. */
     function kindLabel(kind) {
       if (kind === 'risk') return '风险';
       if (kind === 'decision') return '待决定';
@@ -516,19 +515,47 @@ window.__ModuleLoader__.load({
       emptyTitle: { fontSize: 13, fontWeight: 500 },
       emptyHint: { fontSize: 12, opacity: 0.6, lineHeight: 1.5 },
 
-      // ── toast card ───────────────────────────────────────────────────────
-      toast: {
-        position: 'fixed', left: 20, right: 'auto', bottom: 132, width: 300, zIndex: 1010, pointerEvents: 'auto',
-        display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 12px', borderRadius: 10,
+      // ── quick-reply card deck ────────────────────────────────────────────
+      // The deck is a fixed box anchored to the sidebar's right edge; its
+      // children are absolutely positioned so a card can move between 'stacked'
+      // and 'listed' by transform alone, with no layout animation.
+      deck: { position: 'fixed', width: 340, pointerEvents: 'none', zIndex: 998 },
+      deckCard: {
+        position: 'absolute', left: 0, right: 0, bottom: 0, boxSizing: 'border-box',
+        display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 10px',
+        borderRadius: 10, pointerEvents: 'auto', overflow: 'hidden',
         border: '1px solid var(--dsw-alias-border-secondary, rgba(0,0,0,0.12))',
         background: 'var(--dsw-alias-bg-primary, #ffffff)', color: 'inherit', fontSize: 12,
-        boxShadow: '0 8px 24px rgba(0,0,0,0.18)', cursor: 'pointer',
+        boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
       },
-      toastHead: { display: 'flex', alignItems: 'center', gap: 6 },
-      toastText: {
-        lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+      deckMeta: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, opacity: 0.62 },
+      deckText: {
+        lineHeight: 1.45, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
       },
-      toastFoot: { display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 6 },
+      deckTextOpen: { lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
+      deckFoot: { display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap', marginTop: 'auto' },
+      deckBtn: {
+        fontSize: 11, padding: '2px 8px', border: 'none', borderRadius: 6,
+        background: 'transparent', color: 'inherit', cursor: 'pointer',
+      },
+      deckOption: {
+        fontSize: 11, padding: '2px 8px', borderRadius: 6, cursor: 'pointer',
+        border: '1px solid var(--dsw-alias-border-secondary, rgba(0,0,0,0.16))',
+        background: 'transparent', color: 'inherit',
+      },
+      deckReply: {
+        flex: 1, minWidth: 120, height: 24, padding: '0 8px', borderRadius: 6, fontSize: 11,
+        border: '1px solid var(--dsw-alias-border-secondary, rgba(0,0,0,0.16))',
+        background: 'transparent', color: 'inherit', outline: 'none',
+      },
+      deckMore: {
+        position: 'absolute', left: 0, right: 0, height: 26, padding: 0, border: 'none',
+        background: 'transparent', color: 'inherit', opacity: 0.7, fontSize: 11,
+        cursor: 'pointer', pointerEvents: 'auto', textAlign: 'left',
+      },
+      // Zero-size flow node inside the composer dock: its rect is the composer's
+      // top edge, which is what the deck anchors to.
+      probe: { display: 'block', width: 0, height: 0, margin: 0, padding: 0, overflow: 'hidden' },
 
       // ── sidebar glyph bubbles ────────────────────────────────────────────
       // The wrapper is the positioning frame; inline-flex keeps the icon the
@@ -955,28 +982,127 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /** How many cards the deck draws before folding the rest into one line. */
+    const DECK_MAX = 8;
+    /** Slot height of one card in the listed state; the stack uses the same box. */
+    const DECK_SLOT = 96;
+    /** How far each card behind the top one peeks out while stacked. */
+    const DECK_PEEK = 3;
+
     /**
-     * Always-mounted host in the composer dock: it polls the session box and
-     * renders nothing unless a note arrives, so the toolbar keeps its height.
-     * The card is portalled to <body> so no ancestor transform can trap it.
+     * Where the deck lives: the sidebar's right edge and the composer's top.
+     *
+     * The three-column grid belongs to the app frame, so the sidebar width is the
+     * frame's first grid track - read from its computed grid-template-columns,
+     * which is the same number the frame writes inline from the layout store. The
+     * frame itself is found through [data-shell-bottom], its always-rendered
+     * bottom row; the data-sidebar-collapsed attribute is only present while
+     * collapsed, so it cannot be the primary anchor (it stays as a fallback).
+     *
+     * Measured on mount and then only when something real changes: frame resize,
+     * a frame attribute/style rewrite (collapsing the sidebar rewrites the grid
+     * inline style), dock resize and window resize. One animation frame coalesces
+     * a burst of notifications into one read - never one read per frame.
+     *
+     * @param probeRef - zero-size node rendered inside the composer dock.
+     * @returns {{left: number, bottom: number}|null} the deck's anchor.
      */
-    function InboxToastHost({ sessions, layout }) {
+    function useDeckAnchor(probeRef) {
+      const [anchor, setAnchor] = React.useState(null);
+      React.useEffect(() => {
+        if (typeof window === 'undefined' || typeof document === 'undefined') return undefined;
+        const frameOf = () => {
+          const bottomRow = document.querySelector('[data-shell-bottom]');
+          if (bottomRow !== null) return bottomRow.parentElement;
+          return document.querySelector('[data-sidebar-collapsed]');
+        };
+        let scheduled = 0;
+        const measure = () => {
+          const frame = frameOf();
+          const probe = probeRef.current;
+          if (frame === null || probe === null) return;
+          const rect = frame.getBoundingClientRect();
+          const tracks = window.getComputedStyle(frame).gridTemplateColumns || '';
+          const sidebarWidth = Number.parseFloat(tracks);
+          const left = rect.left + (Number.isFinite(sidebarWidth) && sidebarWidth > 0 ? sidebarWidth : 0);
+          const probeRect = probe.getBoundingClientRect();
+          // 12px of air above the composer, measured from the deck's own bottom.
+          const bottom = window.innerHeight - probeRect.top + 12;
+          setAnchor((previous) => (previous !== null
+            && Math.abs(previous.left - left) < 0.5
+            && Math.abs(previous.bottom - bottom) < 0.5 ? previous : { left, bottom }));
+        };
+        const schedule = () => {
+          if (scheduled !== 0) return;
+          scheduled = window.requestAnimationFrame(() => {
+            scheduled = 0;
+            measure();
+          });
+        };
+        const frame = frameOf();
+        schedule();
+        const resized = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null;
+        if (resized !== null) {
+          if (frame !== null) resized.observe(frame);
+          if (probeRef.current !== null) resized.observe(probeRef.current);
+        }
+        const mutated = typeof MutationObserver === 'function' && frame !== null ? new MutationObserver(schedule) : null;
+        if (mutated !== null) {
+          mutated.observe(frame, {
+            attributes: true,
+            attributeFilter: ['style', 'data-sidebar-collapsed', 'data-rightbar-collapsed', 'data-rightbar-fullscreen'],
+          });
+        }
+        window.addEventListener('resize', schedule);
+        return () => {
+          if (scheduled !== 0) window.cancelAnimationFrame(scheduled);
+          if (resized !== null) resized.disconnect();
+          if (mutated !== null) mutated.disconnect();
+          window.removeEventListener('resize', schedule);
+        };
+      }, [probeRef]);
+      return anchor;
+    }
+
+    /**
+     * The quick-reply deck, mounted in the composer dock.
+     *
+     * Every unread note of this Session stays on screen as a card until the human
+     * acts on it: nothing here times out. The cards overlap into a stack by
+     * default and turn into a list while the pointer is over the deck, which is
+     * the whole reason a card can be answered without opening the inbox panel.
+     *
+     * Performance rules: one poll (the existing useLedger), no timers, at most
+     * DECK_MAX cards, and a card is four nodes plus its buttons. Motion is
+     * transform / opacity / max-height only, and none at all when the platform
+     * asks for reduced motion.
+     */
+    function CardDeck({ sessions, layout }) {
       const sessionId = useSessionId(sessions);
       const ledger = useLedger(sessionId, 'session', true);
-      const [toast, setToast] = React.useState(null);
-      const [toastPaused, setToastPaused] = React.useState(false);
-
+      const probeRef = React.useRef(null);
+      const anchor = useDeckAnchor(probeRef);
       const [portalHost, setPortalHost] = React.useState(null);
+      const [hovered, setHovered] = React.useState(false);
+      const [openId, setOpenId] = React.useState(null);
+      const [replyId, setReplyId] = React.useState(null);
+      const [draft, setDraft] = React.useState('');
+      const [busyId, setBusyId] = React.useState(null);
+      const [doneIds, setDoneIds] = React.useState([]);
+      const [error, setError] = React.useState(null);
+      const [reduced, setReduced] = React.useState(false);
+
+      // The deck is portalled to <body>: inside the composer subtree a transformed
+      // ancestor would both trap position:fixed and create a stacking context
+      // that lets the sidebar paint over the cards.
       React.useEffect(() => {
         if (typeof document === 'undefined' || document.body === null || typeof document.createElement !== 'function') return undefined;
         const host = document.createElement('div');
-        host.id = 'lbx-portal';
-        host.setAttribute('data-letterbox-portal', 'true');
+        host.id = 'lbx-deck-portal';
+        host.setAttribute('data-letterbox-deck', 'true');
         host.style.position = 'fixed';
         host.style.inset = '0';
         host.style.pointerEvents = 'none';
-        // Non-zero on purpose: a z-index of 0 makes this host a stacking context
-        // at level 0, so another plugin's own overlay can paint over the card.
         host.style.zIndex = '999';
         document.body.appendChild(host);
         setPortalHost(host);
@@ -987,92 +1113,186 @@ window.__ModuleLoader__.load({
         };
       }, []);
 
-      // Only a note that arrived while the human was already looking counts. The
-      // first loaded snapshot merely primes the baseline, so a window reload never
-      // replays old notes as news; a read that uncovers an older note fails the
-      // createdAt test and never pops a card either.
-      const primed = React.useRef(false);
-      const latestUnread = React.useRef(null);
       React.useEffect(() => {
-        if (!ledger.loaded) return;
-        const newest = ledger.items.find((item) => !item.read) ?? null;
-        const snapshot = newest === null ? null : { id: newest.id, createdAt: newest.createdAt };
-        if (!primed.current) {
-          primed.current = true;
-          latestUnread.current = snapshot;
-          return;
-        }
-        const previous = latestUnread.current;
-        latestUnread.current = snapshot;
-        if (snapshot === null) return;
-        if (previous !== null && snapshot.id === previous.id) return;
-        if (previous !== null && !(snapshot.createdAt > previous.createdAt)) return;
-        setToast({ id: snapshot.id, item: newest });
-        setToastPaused(false);
-      }, [ledger.loaded, ledger.items]);
+        if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined;
+        const query = window.matchMedia('(prefers-reduced-motion: reduce)');
+        const sync = () => setReduced(query.matches === true);
+        sync();
+        if (typeof query.addEventListener !== 'function') return undefined;
+        query.addEventListener('change', sync);
+        return () => query.removeEventListener('change', sync);
+      }, []);
 
-      // Eight seconds on screen, paused while the pointer rests on the card and
-      // resumed with the leftover time instead of a fresh countdown.
-      const remaining = React.useRef(TOAST_MS);
-      const toastKey = React.useRef(null);
+      // A card leaves the deck when the ledger says it is read, or immediately
+      // after a successful answer - waiting for the next poll would leave a card
+      // the human already answered sitting on screen for five seconds.
+      const unread = ledger.items.filter((item) => !item.read && doneIds.indexOf(item.id) === -1);
+      const shown = unread.slice(0, DECK_MAX);
+      const rest = unread.length - shown.length;
+      const pinned = openId !== null || replyId !== null;
+      const listed = hovered || pinned;
+
+      // Answering the last card unmounts the deck, and a mouseleave that never
+      // happens would leave 'hovered' (or an open card id) behind: the next card
+      // would then appear already expanded, with an invisible box over the
+      // conversation. Drop every pointer-driven state the moment the ids change.
+      const shownKey = shown.map((item) => item.id).join(',');
       React.useEffect(() => {
-        if (toast === null) {
-          remaining.current = TOAST_MS;
-          toastKey.current = null;
-          return undefined;
+        const ids = shownKey === '' ? [] : shownKey.split(',');
+        if (openId !== null && ids.indexOf(openId) === -1) setOpenId(null);
+        if (replyId !== null && ids.indexOf(replyId) === -1) {
+          setReplyId(null);
+          setDraft('');
         }
-        if (toastKey.current !== toast.id) {
-          toastKey.current = toast.id;
-          remaining.current = TOAST_MS;
-        }
-        if (toastPaused) return undefined;
-        const startedAt = Date.now();
-        const timer = setTimeout(() => setToast(null), Math.max(remaining.current, 0));
-        return () => {
-          clearTimeout(timer);
-          remaining.current = Math.max(remaining.current - (Date.now() - startedAt), 0);
-        };
-      }, [toast, toastPaused]);
+        if (ids.length === 0) setHovered(false);
+      }, [shownKey, openId, replyId]);
 
-      if (sessionId === null || toast === null) return null;
+      const finish = (id) => setDoneIds((previous) => (previous.indexOf(id) === -1 ? previous.concat(id) : previous));
 
-      // The layout service is the cross-plugin panel face; when it is missing the
-      // card still carries the text, so clicking it just dismisses.
-      const openInbox = () => {
-        setToast(null);
+      const markOne = (id) => {
+        if (busyId !== null) return;
+        setBusyId(id);
+        setError(null);
+        Promise.resolve(ledger.markRead(id)).finally(() => setBusyId(null));
+      };
+
+      const postAnswer = async (id, body) => {
+        if (busyId !== null) return;
+        setBusyId(id);
+        setError(null);
         try {
-          if (layout !== null && layout !== undefined && typeof layout.selectPanel === 'function') layout.selectPanel(PANEL_ID);
+          await post('answer', { sessionId, id, ...body });
+          finish(id);
+          setReplyId(null);
+          setDraft('');
         } catch {
-          /* the main panel is not registered yet; the card already said its piece */
+          setError('提交失败，请重试');
+        } finally {
+          setBusyId(null);
         }
       };
 
-      const card = h('div', {
-        style: styles.toast,
-        role: 'status',
-        onClick: openInbox,
-        onMouseEnter: () => setToastPaused(true),
-        onMouseLeave: () => setToastPaused(false),
-      },
-        h('div', { style: styles.toastHead },
-          h('span', { style: toast.item.priority === 'high' ? styles.kindBadgeWarn : styles.kindBadge }, kindLabel(toast.item.kind)),
-          h('span', { style: styles.time }, '新条目'),
-        ),
-        h('div', { style: styles.toastText }, toast.item.text),
-        h('div', { style: styles.toastFoot },
-          h('button', {
-            type: 'button',
-            className: 'lbx-ghost',
-            style: styles.more,
-            onClick: (event) => {
-              if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-              openInbox();
-            },
-          }, icon('arrow-right'), h('span', null, '查看')),
-        ),
-      );
+      const openInbox = () => {
+        try {
+          if (layout !== null && layout !== undefined && typeof layout.selectPanel === 'function') layout.selectPanel(PANEL_ID);
+        } catch {
+          /* the main panel is not registered yet; the deck already said its piece */
+        }
+      };
 
-      return portalHost === null ? null : ReactDOM.createPortal(card, portalHost);
+      const renderCard = (item, index) => {
+        const open = openId === item.id;
+        const busy = busyId === item.id;
+        const locked = busyId !== null;
+        const dim = locked && !busy ? 0.5 : 1;
+        const style = {
+          ...styles.deckCard,
+          transform: listed
+            ? 'translateY(' + String(-index * DECK_SLOT) + 'px)'
+            : 'translateY(' + String(-index * DECK_PEEK) + 'px) scale(' + String(1 - Math.min(index, 5) * 0.02) + ')',
+          opacity: listed ? 1 : (index === 0 ? 1 : 0.92),
+          zIndex: open ? 60 : 40 - index,
+          minHeight: DECK_SLOT,
+          maxHeight: open ? 480 : DECK_SLOT,
+          boxShadow: open ? '0 12px 32px rgba(0,0,0,0.22)' : styles.deckCard.boxShadow,
+        };
+        if (!reduced) style.transition = 'transform 180ms ease, opacity 180ms ease, max-height 180ms ease';
+
+        const button = (label, onClick) => h('button', {
+          type: 'button',
+          className: 'lbx-ghost',
+          style: { ...styles.deckBtn, opacity: dim },
+          disabled: locked,
+          onClick: (event) => {
+            if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+            onClick();
+          },
+        }, label);
+
+        const foot = replyId === item.id
+          ? h('div', { style: styles.deckFoot },
+            h('input', {
+              type: 'text',
+              style: styles.deckReply,
+              value: draft,
+              disabled: locked,
+              placeholder: '回复一句…',
+              'aria-label': '回复这条笔记',
+              onChange: (event) => setDraft(event.target.value),
+              onKeyDown: (event) => {
+                if (event.key !== 'Enter') return;
+                event.preventDefault();
+                if (draft.trim() !== '') void postAnswer(item.id, { note: draft });
+              },
+            }),
+            button('发送', () => { if (draft.trim() !== '') void postAnswer(item.id, { note: draft }); }),
+          )
+          : h('div', { style: styles.deckFoot },
+            (item.options ?? []).map((option) => h('button', {
+              key: option,
+              type: 'button',
+              className: 'lbx-ghost',
+              style: { ...styles.deckOption, opacity: dim },
+              disabled: locked,
+              onClick: (event) => {
+                if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+                void postAnswer(item.id, { choice: option });
+              },
+            }, option)),
+            button('已读', () => markOne(item.id)),
+            button('回复', () => {
+              setReplyId(item.id);
+              setDraft('');
+              setOpenId(item.id);
+            }),
+            button(open ? '收起' : '展开', () => setOpenId(open ? null : item.id)),
+          );
+
+        const meta = kindLabel(item.kind) + (item.priority === 'high' ? ' · 高' : '') + ' · ' + formatClock(item.createdAt);
+
+        return h('div', {
+          key: item.id,
+          style,
+          'data-card': item.id,
+          onClick: () => setOpenId(open ? null : item.id),
+        },
+          h('div', { style: styles.deckMeta }, meta),
+          h('div', { style: open ? styles.deckTextOpen : styles.deckText }, item.text),
+          foot,
+        );
+      };
+
+      const probe = h('span', { ref: probeRef, style: styles.probe, 'aria-hidden': true });
+      const deck = anchor === null || portalHost === null || shown.length === 0 ? null : ReactDOM.createPortal(h('div', {
+        style: {
+          ...styles.deck,
+          left: anchor.left + 12,
+          bottom: anchor.bottom,
+          height: listed ? shown.length * DECK_SLOT + (rest > 0 ? 26 : 0) : 0,
+          // The box itself only answers the pointer while it is being used: an
+          // always-on transparent rectangle over the conversation would swallow
+          // clicks that were never meant for the deck.
+          pointerEvents: hovered ? 'auto' : 'none',
+        },
+        onMouseEnter: () => setHovered(true),
+        onMouseLeave: () => setHovered(false),
+      },
+        rest > 0 && listed ? h('button', {
+          type: 'button',
+          className: 'lbx-ghost',
+          style: { ...styles.deckMore, bottom: shown.length * DECK_SLOT },
+          onClick: openInbox,
+        }, '还有 ' + String(rest) + ' 条') : null,
+        error === null ? null : h('div', {
+          style: {
+            position: 'absolute', left: 0, bottom: shown.length * DECK_SLOT + 6,
+            fontSize: 11, color: 'var(--dsw-alias-text-warning, #b26a00)', pointerEvents: 'none',
+          },
+        }, error),
+        shown.map(renderCard),
+      ), portalHost);
+
+      return h(React.Fragment, null, probe, deck);
     }
 
     return {
@@ -1080,15 +1300,16 @@ window.__ModuleLoader__.load({
       apply(ctx) {
         const sessions = ctx.get('sessions').list;
         const layout = ctx.get('layout') ?? null;
-        // No drawer any more: this seat is only the toast host, and it renders
-        // null unless a card is due. The registration is what keeps the ledger
-        // polling while the page is open.
+        // The deck rides the composer dock because that is the seat the layout
+        // keeps mounted for the whole conversation: its own render is a portal to
+        // <body>, so nothing in the composer can clip or transform it. The single
+        // ledger poll that feeds it lives in useLedger.
         ctx.effect(() => ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
           name: 'conversation.composer.dock',
           id: 'dsh-letterbox',
           order: 60,
           inject: () => ({ sessions, layout }),
-        }, InboxToastHost)), 'letterbox: toast host');
+        }, CardDeck)), 'letterbox: card deck');
         // The sidebar row only selects a main panel: layout.selectPanel throws
         // unless a main entry with this key is registered, so both go together.
         ctx.effect(() => ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({

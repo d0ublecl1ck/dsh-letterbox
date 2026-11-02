@@ -2,7 +2,7 @@
 
 ## 项目
 
-dsh-letterbox 是 DeepSeek Harness 的插件 bundle：`index.js` 是宿主半边（工具、提示词、认证路由、账本），`client.js` 是 Web 半边（侧栏「收件箱」入口与整页收件箱面板，外加新条目提示卡），`store.js` 是零依赖的纯状态逻辑。
+dsh-letterbox 是 DeepSeek Harness 的插件 bundle：`index.js` 是宿主半边（工具、提示词、认证路由、账本），`client.js` 是 Web 半边（侧栏「收件箱」入口、整页收件箱面板，以及主内容区左下角的常驻未读卡片组），`store.js` 是零依赖的纯状态逻辑。
 
 ## 命令
 
@@ -19,7 +19,7 @@ dsh-letterbox 是 DeepSeek Harness 的插件 bundle：`index.js` 是宿主半边
 ## 约束
 
 - 宿主半边保持零裸导入：`link:` 安装时裸导入从插件自身目录解析，缺依赖会直接激活失败。
-- 回执只由认证路由写入；任何模型工具都不得提供「标记已读」。
+- 回执与卡片答复只由认证路由写入；任何模型工具都不得提供「标记已读」或写答复的能力。
 - 状态文件只写 `$DSH_HOME/letterbox.json`，采用临时文件 + rename。
 - 不在模块顶层做副作用；所有注册都挂 `ctx`。
 - 工具名 snake_case；插件导出的 `name` 是 `letterbox`，与 patch row id 一致。

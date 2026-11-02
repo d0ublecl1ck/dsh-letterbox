@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
+  applyAnswer,
   badgeText,
   checkedInTurn,
   countUnread,
@@ -365,3 +366,71 @@ test('client.js carries the same badgeText body as store.js', () => {
   assert.notEqual(client, null, 'client.js must define badgeText(count)');
   assert.equal(client, store, 'client.js badgeText drifted from store.js');
 });
+
+test('validateAdd accepts options as a trimmed, deduped list', () => {
+  assert.deepEqual(validateAdd({ text: 'pick one', options: ['  修复  ', '跳过', '修复'] }).options, ['修复', '跳过']);
+  assert.deepEqual(validateAdd({ text: 'pick one', options: ['A'] }).options, ['A']);
+  assert.equal(Object.hasOwn(validateAdd({ text: 'no options' }), 'options'), false);
+});
+
+test('validateAdd rejects an options list that cannot render as buttons', () => {
+  assert.throws(() => validateAdd({ text: 'x', options: [] }), /options must be an array of 1 to 6 non-empty strings/);
+  assert.throws(() => validateAdd({ text: 'x', options: Array.from({ length: 7 }, (_, i) => 'o' + i) }), /1 to 6/);
+  assert.throws(() => validateAdd({ text: 'x', options: ['a'.repeat(61)] }), /at most 60 characters/);
+  assert.throws(() => validateAdd({ text: 'x', options: ['ok', 3] }), /options must contain only strings/);
+  assert.throws(() => validateAdd({ text: 'x', options: ['   '] }), /options must be an array of 1 to 6 non-empty strings/);
+  assert.throws(() => validateAdd({ text: 'x', options: 'yes' }), /options must be an array/);
+});
+
+test('normalizeState gives every item an answer slot and drops junk answers', () => {
+  const normalized = normalizeState({
+    sessions: {
+      s1: { items: [
+        { id: 'lb_a', text: 'old note', kind: 'note', priority: 'normal', createdAt: 1 },
+        { id: 'lb_b', text: 'answered', kind: 'decision', priority: 'normal', createdAt: 2, answer: { choice: 'go', note: null, answeredAt: 42 } },
+        { id: 'lb_c', text: 'half junk', kind: 'note', priority: 'normal', createdAt: 3, answer: { choice: 7, note: '  留一句  ', answeredAt: 'soon' } },
+        { id: 'lb_d', text: 'not an object', kind: 'note', priority: 'normal', createdAt: 4, answer: 'yes' },
+        { id: 'lb_e', text: 'bad options', kind: 'note', priority: 'normal', createdAt: 5, options: ['ok', 2, '', 'fine'] },
+      ] },
+    },
+  });
+  const byId = Object.fromEntries(normalized.sessions.s1.items.map((item) => [item.id, item]));
+  assert.equal(byId.lb_a.answer, null, 'an old ledger has no answer');
+  assert.deepEqual(byId.lb_b.answer, { choice: 'go', note: null, answeredAt: 42 });
+  assert.deepEqual(byId.lb_c.answer, { choice: null, note: '留一句', answeredAt: null });
+  assert.equal(byId.lb_d.answer, null, 'a non-object answer is unreadable');
+  assert.deepEqual(byId.lb_e.options, ['ok', 'fine']);
+  assert.deepEqual(byId.lb_a.options, [], 'an old ledger has no options at all');
+});
+
+test('applyAnswer records the latest answer and marks the note read', () => {
+  const state = emptyState();
+  addItem(state, { sessionId: 's1', payload: { text: 'pick', kind: 'decision', priority: 'normal', source: null, options: ['修复', '跳过'] }, now: 1000, id: 'lb_x' });
+  assert.equal(applyAnswer(state, { sessionId: 's1', id: 'lb_x', choice: '修复', note: null, now: 5000 }), true);
+  const first = listItems(state, 's1')[0];
+  assert.deepEqual(first.answer, { choice: '修复', note: null, answeredAt: 5000 });
+  assert.equal(first.read, true, 'answering acknowledges the note in the same write');
+  assert.deepEqual(first.options, ['修复', '跳过']);
+  // Same answer twice changes nothing the second time.
+  assert.equal(applyAnswer(state, { sessionId: 's1', id: 'lb_x', choice: '修复', note: null, now: 5000 }), false);
+  assert.deepEqual(listItems(state, 's1')[0].answer, { choice: '修复', note: null, answeredAt: 5000 });
+  // A later answer wins outright.
+  assert.equal(applyAnswer(state, { sessionId: 's1', id: 'lb_x', choice: '跳过', note: '先跳过', now: 6000 }), true);
+  assert.deepEqual(listItems(state, 's1')[0].answer, { choice: '跳过', note: '先跳过', answeredAt: 6000 });
+});
+
+test('applyAnswer ignores an unknown id or session', () => {
+  const state = emptyState();
+  addItem(state, { sessionId: 's1', payload: { text: 'one', kind: 'note', priority: 'normal', source: null }, now: 1, id: 'lb_1' });
+  assert.equal(applyAnswer(state, { sessionId: 's1', id: 'lb_missing', choice: 'x', now: 2 }), false);
+  assert.equal(applyAnswer(state, { sessionId: 'nope', id: 'lb_1', choice: 'x', now: 2 }), false);
+  assert.equal(listItems(state, 's1')[0].read, false);
+});
+
+test('addItem keeps options and listItems exposes them', () => {
+  const state = emptyState();
+  addItem(state, { sessionId: 's1', payload: { text: 'pick', kind: 'decision', priority: 'normal', source: null, options: ['A', 'B'] }, now: 1, id: 'lb_o' });
+  assert.deepEqual(listItems(state, 's1')[0].options, ['A', 'B']);
+  assert.equal(listItems(state, 's1')[0].answer, null);
+});
+

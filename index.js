@@ -22,6 +22,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   addItem,
+  applyAnswer,
   checkedInTurn,
   countUnread,
   emptyState,
@@ -29,6 +30,8 @@ import {
   listItems,
   markChecked,
   markRead,
+  MAX_OPTION_LENGTH,
+  MAX_TEXT,
   normalizeState,
   noteMiss,
   pageItems,
@@ -76,7 +79,7 @@ function guidance(config) {
     '',
     'This Session has a letterbox: the only channel where the human records that they actually read something. A note counts as read only when the human clicks its 已读 button in the panel. Nothing else counts as read - not sending it, not mentioning it in a message.',
     '',
-    'You have three tools: `letterbox_add`, `letterbox_list`, `letterbox_status`.',
+    'You have four tools: `letterbox_add`, `letterbox_list`, `letterbox_status`, `letterbox_answer`. A note filed with `options` shows those options as buttons on its card, and every card also offers a one-line reply; read what the human picked or typed with `letterbox_answer` (it only reads - it never writes a receipt or an answer).',
     '',
     '## Every turn, two duties',
   ];
@@ -103,6 +106,21 @@ function renderItem(item) {
   const priority = item.priority === 'high' ? '!' : ' ';
   const scope = item.scope === 'global' ? ' [global]' : '';
   return '- [' + badge + ']' + priority + ' (' + item.kind + ')' + scope + ' ' + item.text + (item.source ? ' — from ' + item.source : '');
+}
+
+/**
+ * One-line rendering of an answered note: what the human picked or typed, when,
+ * and enough of the note to recognise it.
+ * @param item - a public item carrying `answer`.
+ * @returns one line for the tool result.
+ */
+function renderAnswer(item) {
+  const answer = item.answer;
+  const text = item.text.length > 80 ? item.text.slice(0, 80) + '…' : item.text;
+  const choice = answer.choice === null ? '—' : answer.choice;
+  const note = answer.note === null ? '—' : answer.note;
+  const at = Number.isFinite(answer.answeredAt) ? new Date(answer.answeredAt).toISOString() : '—';
+  return '- ' + item.id + ' · ' + item.kind + ' · choice: ' + choice + ' · note: ' + note + ' · answeredAt: ' + at + ' · ' + text;
 }
 
 /**
@@ -256,6 +274,11 @@ export function apply(rawCtx, rawConfig) {
         kind: { type: 'string', enum: ['risk', 'note', 'decision', 'handoff'], description: 'risk = something that can bite later; decision = a choice only the human can make.' },
         priority: { type: 'string', enum: ['high', 'normal'], description: 'high is rendered with a warning tone.' },
         source: { type: 'string', description: 'Optional origin label, e.g. a subagent name or a file path.' },
+        options: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '1-6 candidate choices, max 60 characters each. The human sees one button per option on the card; picking one answers the note and marks it read.',
+        },
         scope: {
           type: 'string',
           enum: ['session', 'global'],
@@ -348,6 +371,45 @@ export function apply(rawCtx, rawConfig) {
         body.push('global: all ' + globalFiled.length + ' note(s) acknowledged; treat them as shared ground.');
       }
       return head + '\n' + body.join('\n') + '\n' + stamp;
+    },
+  });
+
+  ctx.tools.register({
+    name: 'letterbox_answer',
+    description: 'Read the answers the human gave on the cards: the notes they picked an option on or replied to, newest first. Read-only - it never writes a receipt or an answer.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        sessionId: { type: 'string', description: 'Session whose box to read. Defaults to the calling session.' },
+        bucket: { type: 'string', enum: ['session', 'global'], description: 'Which box: session (default) or the shared global box.' },
+        id: { type: 'string', description: 'When set, only that note is reported.' },
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: String(value) }],
+    },
+    async execute(args, exec) {
+      const named = typeof args?.sessionId === 'string' && args.sessionId !== '' ? args.sessionId : null;
+      const sessionId = named ?? sessionIdOf(exec);
+      if (sessionId === null) throw new Error('letterbox_answer: no calling session');
+      await ready;
+      const bucket = args?.bucket === 'global' ? 'global' : 'session';
+      const scopeId = bucketIdOf(sessionId, bucket);
+      const wanted = typeof args?.id === 'string' && args.id !== '' ? args.id : null;
+      // Only answered notes are reported: an unread card is still open, and this
+      // tool exists to read a decision the human already made.
+      const answered = listItems(state, scopeId)
+        .filter((item) => item.answer !== null && item.answer !== undefined)
+        .filter((item) => wanted === null || item.id === wanted)
+        .sort((left, right) => (right.answer.answeredAt ?? 0) - (left.answer.answeredAt ?? 0));
+      if (answered.length === 0) {
+        return wanted === null
+          ? 'no answers in this ' + bucket + ' box yet: every card is still waiting for the human.'
+          : 'no answer for ' + wanted + ' in this ' + bucket + ' box yet.';
+      }
+      return answered.slice(0, 20).map(renderAnswer).join('\n');
     },
   });
 
@@ -542,6 +604,32 @@ export function apply(rawCtx, rawConfig) {
           const bucket = body?.bucket === 'global' ? 'global' : 'session';
           const scopeId = bucketIdOf(sessionId, bucket);
           const changed = markRead(state, { sessionId: scopeId, id: body.id, now: Date.now() });
+          if (changed) schedulePersist();
+          sendJson(res, 200, { ok: true, value: { ...snapshotFor(scopeId, {}, sessionId), changed } });
+          return;
+        }
+        if (endpoint === 'answer') {
+          // The card offers exactly two ways to finish: pick an option, or type
+          // a one-line reply. Both land here, and both acknowledge the note in
+          // the same write - a half-answered note would be a state no reader of
+          // the receipt could interpret.
+          if (typeof body?.id !== 'string' || body.id === '') {
+            sendJson(res, 400, { ok: false, error: { code: 'bad-request', message: 'id must be a non-empty string' } });
+            return;
+          }
+          const choice = typeof body?.choice === 'string' && body.choice.trim() !== '' ? body.choice.trim() : null;
+          const note = typeof body?.note === 'string' && body.note.trim() !== '' ? body.note.trim() : null;
+          if (choice === null && note === null) {
+            sendJson(res, 400, { ok: false, error: { code: 'bad-request', message: 'choice or note must be a non-empty string' } });
+            return;
+          }
+          if ((choice !== null && choice.length > MAX_OPTION_LENGTH) || (note !== null && note.length > MAX_TEXT)) {
+            sendJson(res, 400, { ok: false, error: { code: 'bad-request', message: 'answer is too long' } });
+            return;
+          }
+          const bucket = body?.bucket === 'global' ? 'global' : 'session';
+          const scopeId = bucketIdOf(sessionId, bucket);
+          const changed = applyAnswer(state, { sessionId: scopeId, id: body.id, choice, note, now: Date.now() });
           if (changed) schedulePersist();
           sendJson(res, 200, { ok: true, value: { ...snapshotFor(scopeId, {}, sessionId), changed } });
           return;

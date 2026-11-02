@@ -17,6 +17,10 @@ export const PRIORITIES = ['high', 'normal'];
 export const MAX_TEXT = 4000;
 /** Hard ceiling on one item's source label. */
 export const MAX_SOURCE = 200;
+/** How many options one note may offer as buttons. */
+export const MAX_OPTIONS = 6;
+/** Hard ceiling on one option label: it has to fit a card button. */
+export const MAX_OPTION_LENGTH = 60;
 /** Item kinds rendered with a warning tone in the panel. */
 export const HIGH_SIGNAL_KINDS = new Set(['risk', 'decision']);
 /**
@@ -48,6 +52,48 @@ export function emptyBucket() {
 }
 
 /**
+ * Normalize the answer slot of one item.
+ *
+ * An item only carries an answer after the human picked an option or replied on
+ * a card. Anything unreadable collapses to null, and a missing field means the
+ * ledger predates answers - an old box must load without inventing one.
+ *
+ * @param raw - whatever the file held under `answer`.
+ * @returns `null` or `{ choice, note, answeredAt }` with nulls for junk.
+ */
+function normalizeAnswer(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const choice = typeof raw.choice === 'string' && raw.choice.trim() !== ''
+    ? raw.choice.trim().slice(0, MAX_OPTION_LENGTH)
+    : null;
+  const note = typeof raw.note === 'string' && raw.note.trim() !== ''
+    ? raw.note.trim().slice(0, MAX_TEXT)
+    : null;
+  const answeredAt = Number.isFinite(raw.answeredAt) ? raw.answeredAt : null;
+  if (choice === null && note === null && answeredAt === null) return null;
+  return { choice, note, answeredAt };
+}
+
+/**
+ * Normalize the option list attached to one item.
+ * @param raw - whatever the file held under `options`.
+ * @returns a deduped array of short strings, possibly empty.
+ */
+function normalizeOptions(raw) {
+  if (!Array.isArray(raw)) return [];
+  const cleaned = [];
+  for (const option of raw) {
+    if (typeof option !== 'string') continue;
+    const trimmed = option.trim();
+    if (trimmed === '') continue;
+    const clipped = trimmed.slice(0, MAX_OPTION_LENGTH);
+    if (!cleaned.includes(clipped)) cleaned.push(clipped);
+    if (cleaned.length >= MAX_OPTIONS) break;
+  }
+  return cleaned;
+}
+
+/**
  * Normalize one stored item, dropping anything unreadable.
  * @param item - whatever the file held.
  * @returns a list with zero or one item.
@@ -65,7 +111,9 @@ function normalizeItem(item) {
   // Older ledgers have no scope at all; anything unreadable falls back to the
   // narrowest meaning rather than promoting a private note to global.
   const scope = SCOPES.includes(item.scope) ? item.scope : 'session';
-  return [{ id: item.id, text, kind, priority, scope, source, createdAt, readAt }];
+  const options = normalizeOptions(item.options);
+  const answer = normalizeAnswer(item.answer);
+  return [{ id: item.id, text, kind, priority, scope, source, createdAt, readAt, options, answer }];
 }
 
 /**
@@ -95,6 +143,30 @@ export function normalizeState(raw) {
 }
 
 /**
+ * Validate the option list of one `letterbox_add` call.
+ * @param raw - the model-supplied array.
+ * @returns the trimmed, deduped list.
+ * @throws when the list could not be rendered as buttons.
+ */
+function validateOptions(raw) {
+  if (!Array.isArray(raw)) throw new Error('letterbox_add: options must be an array');
+  if (raw.length < 1 || raw.length > MAX_OPTIONS) {
+    throw new Error('letterbox_add: options must be an array of 1 to ' + MAX_OPTIONS + ' non-empty strings');
+  }
+  const cleaned = [];
+  for (const option of raw) {
+    if (typeof option !== 'string') throw new Error('letterbox_add: options must contain only strings');
+    const trimmed = option.trim();
+    if (trimmed === '') throw new Error('letterbox_add: options must be an array of 1 to ' + MAX_OPTIONS + ' non-empty strings');
+    if (trimmed.length > MAX_OPTION_LENGTH) {
+      throw new Error('letterbox_add: each option must be at most ' + MAX_OPTION_LENGTH + ' characters');
+    }
+    if (!cleaned.includes(trimmed)) cleaned.push(trimmed);
+  }
+  return cleaned;
+}
+
+/**
  * Validate a model-supplied `letterbox_add` payload.
  * @param input - tool arguments.
  * @returns a clean payload.
@@ -119,11 +191,16 @@ export function validateAdd(input) {
   if (raw.scope !== undefined && !SCOPES.includes(raw.scope)) {
     throw new Error('letterbox_add: scope must be one of ' + SCOPES.join(', '));
   }
-  // `scope` is only echoed when the caller named one: the default lives in
-  // `addItem`, and an absent field keeps older callers' payload shape intact.
-  return raw.scope === undefined
-    ? { text, kind, priority, source }
-    : { text, kind, priority, source, scope: raw.scope };
+  // Options are the only thing the human can click on a card, so they are
+  // validated here - the single place a model payload enters the ledger.
+  const options = raw.options === undefined || raw.options === null ? undefined : validateOptions(raw.options);
+  // `scope` and `options` are only echoed when the caller named one: the
+  // defaults live in `addItem`, and an absent field keeps older callers'
+  // payload shape intact.
+  const payload = { text, kind, priority, source };
+  if (raw.scope !== undefined) payload.scope = raw.scope;
+  if (options !== undefined) payload.options = options;
+  return payload;
 }
 
 /**
@@ -152,6 +229,8 @@ export function addItem(state, options) {
     source: payload.source ?? null,
     createdAt: now,
     readAt: null,
+    options: Array.isArray(payload.options) ? payload.options.slice() : [],
+    answer: null,
   };
   state.sessions[bucketId].items.push(item);
   return item;
@@ -286,6 +365,44 @@ export function markRead(state, options) {
 }
 
 /**
+ * Write the human's answer onto one item and acknowledge it in the same write.
+ *
+ * A card offers two ways to finish: pick an option (`choice`) or type a reply
+ * (`note`). Both land here, so the ledger has exactly one place where an answer
+ * lives - and answering is acknowledging: there is no separate read call left to
+ * forget. A later answer replaces the earlier one outright, and an unknown id is
+ * a no-op rather than an error, because a card may be racing a poll.
+ *
+ * @param state - ledger, mutated in place.
+ * @param options - sessionId (the bucket owner), id, choice, note, now.
+ * @returns true when the item actually changed.
+ */
+export function applyAnswer(state, options) {
+  const { sessionId, id } = options;
+  const bucket = state.sessions[sessionId];
+  if (!bucket) return false;
+  const item = bucket.items.find((candidate) => candidate.id === id);
+  if (!item) return false;
+  const choice = typeof options.choice === 'string' && options.choice.trim() !== ''
+    ? options.choice.trim().slice(0, MAX_OPTION_LENGTH)
+    : null;
+  const note = typeof options.note === 'string' && options.note.trim() !== ''
+    ? options.note.trim().slice(0, MAX_TEXT)
+    : null;
+  const answeredAt = Number.isFinite(options.now) ? options.now : null;
+  const previous = item.answer ?? null;
+  const unchanged = previous !== null
+    && previous.choice === choice
+    && previous.note === note
+    && previous.answeredAt === answeredAt
+    && item.readAt !== null;
+  if (unchanged) return false;
+  item.answer = { choice, note, answeredAt };
+  if (item.readAt === null) item.readAt = answeredAt;
+  return true;
+}
+
+/**
  * Trim a session's bucket to `limit` items, dropping the oldest read items first.
  * @param state - ledger, mutated in place.
  * @param sessionId - owning session.
@@ -370,5 +487,7 @@ export function toPublicItem(item) {
     createdAt: item.createdAt,
     read: item.readAt !== null,
     readAt: item.readAt,
+    options: Array.isArray(item.options) ? item.options : [],
+    answer: item.answer ?? null,
   };
 }

@@ -10,5 +10,9 @@
 - [ ] `letterbox_status` 的 checkpoint 写入依赖 `session/event` 的 turn/start 序号；若宿主把 turn 事件改成别的名字，miss 会静默不记（不影响工具本身）。下次升级 dsh 时先核对事件名。记录：2026-10-31
 - [ ] `client.js` 的 `badgeText` 与 `store.js` 的 `badgeText` 是同体镜像：Web 包由模块加载器 materialize，其 `require` 只解析 loader id（react/react-dom），拿不到包内相对 ESM，所以只能复制。改任一份都必须同步另一份，`test/store.test.mjs` 的「client.js carries the same badgeText body as store.js」会红。记录：2026-11-02
 - [ ] 侧栏未读角标在折叠态（36×36 行、18px 图标）的视觉密度还没在真实界面确认过：两个 12px 药丸贴着图标四角，目前 offset 是 ±4px，要调等用户看过再动。记录：2026-11-02
-- [ ] 侧栏角标（`useUnreadBadge`）与 `InboxToastHost` 各自 5s 轮询同一个 `/letterbox/list`，每 5 秒两次轻请求是刻意的现状；要合并必须改结构，别顺手改。记录：2026-11-02
+- [ ] 侧栏角标（`useUnreadBadge`）与左下角卡片组（`CardDeck` 复用 `useLedger`）各自 5s 轮询同一个 `/letterbox/list`，每 5 秒两次轻请求是刻意的现状；要合并必须改结构，别顺手改。记录：2026-11-02
 - [ ] 详情页操作行（标记为已读 / 上一封 / 下一封）现在在正文下方、字段表上方；再动详情或列表布局时，同时核对 `styles.actionRow` 与 README「用法」里那段详情描述。记录：2026-11-02
+- [ ] 卡片组定位靠 `useDeckAnchor`：左缘 = 应用 frame（`[data-shell-bottom]` 的父元素）`rect.left` + 计算样式 `grid-template-columns` 的第一条轨道；`data-sidebar-collapsed` 只在折叠态存在于 frame 上，不能当主锚点。bottom = composer dock 里那个 0 尺寸探针的 `top` + 12。真机验收时在展开态、折叠态、窗口缩放各确认一次这两个数，否则卡片会跑到侧栏上或压住输入框。记录：2026-11-02
+- [ ] 卡片叠放靠 transform：堆叠态 `translateY(-index*3px) scale(1-index*0.02)`，展开态 `translateY(-index*96px)`；`DECK_SLOT = 96` 同时也是卡片 `minHeight`/`maxHeight`，改卡片内容高度必须同步这个常量，否则展开列表会互相压住。记录：2026-11-02
+- [ ] 卡片组上限 `DECK_MAX = 8`，其余折成「还有 N 条」（只在展开态出现，已与需求方确认，别改成常显）；`prefers-reduced-motion` 下所有过渡直接关闭。卡片节点数超过 10 是已确认的例外：选项按钮必须逐项真实渲染，别再为凑节点数把它们藏进二级菜单。记录：2026-11-02
+- [ ] 答复走认证路由 `POST /letterbox/answer`（choice 或 note），答复与已读在同一写操作里完成；卡片成功后用本地 `doneIds` 立即移除，不等 5s 轮询。模型侧的 `letterbox_answer` 只读，别再给它加写能力。记录：2026-11-02
