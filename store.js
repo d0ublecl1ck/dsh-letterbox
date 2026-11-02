@@ -251,6 +251,25 @@ export function countUnread(state, sessionId) {
 }
 
 /**
+ * What an unread bubble should say, given a raw count.
+ *
+ * The bubbles are 12px tall, so a wide number would either wrap or spill out of
+ * the icon; anything past two digits is therefore reported as a capped "99+"
+ * rather than the exact total. An empty string means "draw no bubble at all",
+ * which also covers junk input: a server that answers null, a string, or NaN
+ * must leave the sidebar clean instead of painting "NaN".
+ *
+ * @param count - the raw unread count from the host.
+ * @returns '' to hide the bubble, else '1'…'99' or '99+'.
+ */
+export function badgeText(count) {
+  if (typeof count !== 'number' || !Number.isFinite(count)) return '';
+  if (!Number.isInteger(count)) return '';
+  if (count <= 0) return '';
+  return count > 99 ? '99+' : String(count);
+}
+
+/**
  * Mark one item read.
  * @param state - ledger, mutated in place.
  * @param options - sessionId, id, now.

@@ -2,7 +2,7 @@
 
 ## 项目
 
-dsh-letterbox 是 DeepSeek Harness 的插件 bundle：`index.js` 是宿主半边（工具、提示词、认证路由、账本），`client.js` 是 Web 半边（输入框上方的收件箱栏），`store.js` 是零依赖的纯状态逻辑。
+dsh-letterbox 是 DeepSeek Harness 的插件 bundle：`index.js` 是宿主半边（工具、提示词、认证路由、账本），`client.js` 是 Web 半边（侧栏「收件箱」入口与整页收件箱面板，外加新条目提示卡），`store.js` 是零依赖的纯状态逻辑。
 
 ## 命令
 

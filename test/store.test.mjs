@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
+  badgeText,
   checkedInTurn,
   countUnread,
   emptyBucket,
@@ -315,4 +317,51 @@ test('trimSession drops read items first, then the oldest', () => {
   assert.deepEqual(listItems(state, 's1').map((item) => item.text), ['d', 'c', 'b']);
   assert.equal(trimSession(state, 's1', 1), 2);
   assert.deepEqual(listItems(state, 's1').map((item) => item.text), ['d']);
+});
+
+test('badgeText renders 1..99 as-is', () => {
+  assert.equal(badgeText(1), '1');
+  assert.equal(badgeText(9), '9');
+  assert.equal(badgeText(42), '42');
+  assert.equal(badgeText(99), '99');
+});
+
+test('badgeText collapses anything above 99 to 99+', () => {
+  assert.equal(badgeText(100), '99+');
+  assert.equal(badgeText(999), '99+');
+});
+
+test('badgeText draws nothing for zero and other non-positive numbers', () => {
+  assert.equal(badgeText(0), '');
+  assert.equal(badgeText(-1), '');
+  assert.equal(badgeText(-999), '');
+});
+
+test('badgeText draws nothing for values that are not a positive integer', () => {
+  assert.equal(badgeText(Number.NaN), '');
+  assert.equal(badgeText(Number.POSITIVE_INFINITY), '');
+  assert.equal(badgeText(1.5), '');
+  assert.equal(badgeText('3'), '');
+  assert.equal(badgeText(''), '');
+  assert.equal(badgeText(undefined), '');
+  assert.equal(badgeText(null), '');
+  assert.equal(badgeText(true), '');
+});
+
+// The Web bundle is materialized by the module loader, whose require() only
+// resolves loader ids, so client.js keeps its own copy of the formatter. Pin the
+// two bodies to one text so a change to either side fails here.
+test('client.js carries the same badgeText body as store.js', () => {
+  const body = (source) => {
+    const open = source.indexOf('function badgeText(count) {');
+    if (open < 0) return null;
+    const rest = source.slice(open);
+    const close = rest.search(/\n\s*\}/);
+    if (close < 0) return null;
+    return rest.slice(0, close).split('\n').map((line) => line.trim()).filter((line) => line.length > 0).join('\n');
+  };
+  const client = body(readFileSync(new URL('../client.js', import.meta.url), 'utf8'));
+  const store = body(readFileSync(new URL('../store.js', import.meta.url), 'utf8'));
+  assert.notEqual(client, null, 'client.js must define badgeText(count)');
+  assert.equal(client, store, 'client.js badgeText drifted from store.js');
 });

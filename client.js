@@ -35,6 +35,13 @@ window.__ModuleLoader__.load({
       return list.ids.length > 0 ? list.ids[0] : null;
     }
 
+    /**
+     * Stand-in sessions service for a slot rendered without the `sessions`
+     * inject: it reports "no conversation", so a hollow mount draws no bubbles
+     * instead of throwing inside the sidebar.
+     */
+    const NO_SESSIONS = { getSnapshot: () => null, subscribe: () => undefined };
+
     function useSessionId(sessions) {
       const [sessionId, setSessionId] = React.useState(() => currentSessionId(sessions.getSnapshot()));
       React.useEffect(() => {
@@ -103,6 +110,54 @@ window.__ModuleLoader__.load({
         }
       }, [sessionId, bucket]);
       return { ...ledger, markRead };
+    }
+
+    /** Nothing unread: the shape the sidebar bubbles start from. */
+    const NO_UNREAD = { sessionUnread: 0, globalUnread: 0 };
+
+    /**
+     * Unread counts for the two sidebar bubbles.
+     *
+     * One `list` request answers both bubbles: the host reports the session
+     * box's `unreadCount` next to the shared box's `globalUnreadCount`. The poll
+     * keeps the dock's 5s cadence, and a refused request leaves the previous
+     * numbers alone — a dropped poll must neither blank the bubbles nor push an
+     * error into the sidebar, which has nowhere to show one.
+     *
+     * @returns {{ sessionUnread: number, globalUnread: number }} the two counts.
+     */
+    function useUnreadBadge(sessions) {
+      const sessionId = useSessionId(sessions ?? NO_SESSIONS);
+      const [counts, setCounts] = React.useState(NO_UNREAD);
+      const alive = React.useRef(true);
+      React.useEffect(() => () => { alive.current = false; }, []);
+      React.useEffect(() => {
+        alive.current = true;
+        if (sessionId === null) {
+          setCounts(NO_UNREAD);
+          return undefined;
+        }
+        let cancelled = false;
+        const refresh = async () => {
+          try {
+            const value = await post('list', { sessionId, bucket: 'session' });
+            if (cancelled || !alive.current) return;
+            setCounts({
+              sessionUnread: Number.isInteger(value?.unreadCount) ? value.unreadCount : 0,
+              globalUnread: Number.isInteger(value?.globalUnreadCount) ? value.globalUnreadCount : 0,
+            });
+          } catch {
+            /* keep the last counts: the sidebar only reports, it cannot explain */
+          }
+        };
+        void refresh();
+        const timer = setInterval(() => { void refresh(); }, POLL_MS);
+        return () => {
+          cancelled = true;
+          clearInterval(timer);
+        };
+      }, [sessionId]);
+      return counts;
     }
 
     /** Delay a fast-changing value so typing does not fire one request per key. */
@@ -255,6 +310,25 @@ window.__ModuleLoader__.load({
       return sameDay ? two(date.getHours()) + ':' + two(date.getMinutes()) : two(date.getMonth() + 1) + '/' + two(date.getDate());
     }
 
+    /**
+     * Text for one unread bubble.
+     *
+     * Mirrors `badgeText` in store.js — the Web bundle is one script the module
+     * loader materializes, and its `require` only resolves loader ids
+     * (react/react-dom), never a sibling ESM file, so the browser half cannot
+     * import the Node half. test/store.test.mjs pins both copies to one body so
+     * they cannot drift.
+     *
+     * @param count - the raw unread count from the host.
+     * @returns '' to hide the bubble, else '1'…'99' or '99+'.
+     */
+    function badgeText(count) {
+      if (typeof count !== 'number' || !Number.isFinite(count)) return '';
+      if (!Number.isInteger(count)) return '';
+      if (count <= 0) return '';
+      return count > 99 ? '99+' : String(count);
+    }
+
     /** Kind badges shared by rows, the detail head and the toast card. */
     function kindLabel(kind) {
       if (kind === 'risk') return '风险';
@@ -301,6 +375,18 @@ window.__ModuleLoader__.load({
       '@media (max-width: 719px){.lbx-shell{flex-direction:column}.lbx-navlist{flex-direction:row;flex-wrap:wrap;width:auto;flex:0 0 auto;border-right:none;border-bottom:1px solid var(--dsw-alias-border-secondary,rgba(0,0,0,0.08));padding:6px;overflow:visible}.lbx-navitem{width:auto;flex:0 0 auto}.lbx-divider{display:none}}',
       '@media (prefers-reduced-motion: reduce){.lbx-view{animation:none}.lbx-rowact{transition:none}.lbx-ghost,.lbx-row,.lbx-navitem{transition:none}}',
     ].join(String.fromCharCode(10));
+
+    // One pill, two anchors. The ring is the host's own sidebar fill painted as a
+    // 1.5px shadow: the bubble sits on top of the icon's strokes, and without it
+    // the glyph lines show through the corners and read as dirt. pointer-events
+    // stays off so the bubble never steals the row's click.
+    const BUBBLE = {
+      position: 'absolute', boxSizing: 'border-box', minWidth: 12, height: 12,
+      padding: '0 3px', borderRadius: 999, color: '#ffffff', fontSize: 9,
+      fontWeight: 600, lineHeight: '12px', textAlign: 'center', whiteSpace: 'nowrap',
+      pointerEvents: 'none', fontVariantNumeric: 'tabular-nums',
+      boxShadow: '0 0 0 1.5px var(--dsw-specific-sidebar-fill, transparent)',
+    };
 
     const styles = {
       // ── page shell ───────────────────────────────────────────────────────
@@ -409,6 +495,12 @@ window.__ModuleLoader__.load({
       fields: { marginTop: 14, display: 'grid', gridTemplateColumns: '56px 1fr', columnGap: 8, rowGap: 6, alignItems: 'baseline' },
       fieldLabel: { fontSize: 11, opacity: 0.55 },
       fieldValue: { fontSize: 12, opacity: 0.75, minWidth: 0, wordBreak: 'break-word' },
+      // The reading actions sit under the body, so the rule above them is the
+      // only thing separating prose from controls.
+      actionRow: {
+        display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', marginTop: 12, paddingTop: 10,
+        borderTop: '1px solid var(--dsw-alias-border-secondary, rgba(0,0,0,0.08))',
+      },
 
       // ── pager ────────────────────────────────────────────────────────────
       pagerBar: {
@@ -437,6 +529,17 @@ window.__ModuleLoader__.load({
         lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
       },
       toastFoot: { display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 6 },
+
+      // ── sidebar glyph bubbles ────────────────────────────────────────────
+      // The wrapper is the positioning frame; inline-flex keeps the icon the
+      // only thing that sizes the box, so the row's own centring is untouched.
+      glyphWrap: { position: 'relative', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' },
+      // Session count: top-right, brand blue. It answers "is there anything for
+      // the conversation I am looking at".
+      glyphBadgeSession: { ...BUBBLE, top: -4, right: -4, background: 'var(--dsw-alias-brand-primary, #4c8dff)' },
+      // Global count: bottom-left, warning amber. It answers "is anything unread
+      // anywhere", so it must not compete with the session bubble above.
+      glyphBadgeGlobal: { ...BUBBLE, bottom: -4, left: -4, background: 'var(--dsw-alias-text-warning, #b26a00)' },
     };
 
     /**
@@ -766,30 +869,6 @@ window.__ModuleLoader__.load({
             'aria-label': '返回列表',
           }, icon('arrow-left', 14), h('span', null, '返回')),
           h('span', { style: styles.spacer }),
-          detailItem.read
-            ? null
-            : h('button', {
-              type: 'button',
-              className: 'lbx-ghost',
-              style: styles.iconBtn,
-              'aria-label': '标记为已读',
-              title: '标记为已读',
-              onClick: () => void markIds([detailItem.id]),
-            }, icon('check', 15)),
-          h('button', {
-            type: 'button',
-            className: 'lbx-ghost',
-            style: styles.more,
-            disabled: previous === null,
-            onClick: () => { if (previous !== null) setSelectedId(previous.id); },
-          }, '上一封'),
-          h('button', {
-            type: 'button',
-            className: 'lbx-ghost',
-            style: styles.more,
-            disabled: next === null,
-            onClick: () => { if (next !== null) setSelectedId(next.id); },
-          }, '下一封'),
         ),
         h('div', { style: styles.detailScroll },
           h('div', { style: styles.detailTitleRow },
@@ -798,6 +877,36 @@ window.__ModuleLoader__.load({
             h('span', { style: styles.detailTime }, formatReadAt(detailItem.createdAt)),
           ),
           h('div', { style: styles.detailText }, detailItem.text),
+          // Reading actions live under the body, where the eye lands after the
+          // note rather than before it; the bar above keeps only "back".
+          h('div', { style: styles.actionRow },
+            detailItem.read
+              ? null
+              : h('button', {
+                type: 'button',
+                className: 'lbx-ghost',
+                style: { ...styles.iconBtn, width: 'auto', padding: '4px 10px', gap: 4, fontSize: 12 },
+                'aria-label': '标记为已读',
+                title: '标记为已读',
+                onClick: () => void markIds([detailItem.id]),
+              }, icon('check', 15), h('span', null, '标记为已读')),
+            detailItem.read ? null : h('span', { style: styles.toolbarDot, 'aria-hidden': true }, '·'),
+            h('button', {
+              type: 'button',
+              className: 'lbx-ghost',
+              style: styles.more,
+              disabled: previous === null,
+              onClick: () => { if (previous !== null) setSelectedId(previous.id); },
+            }, '上一封'),
+            h('span', { style: styles.toolbarDot, 'aria-hidden': true }, '·'),
+            h('button', {
+              type: 'button',
+              className: 'lbx-ghost',
+              style: styles.more,
+              disabled: next === null,
+              onClick: () => { if (next !== null) setSelectedId(next.id); },
+            }, '下一封'),
+          ),
           h('div', { style: styles.fields },
             field('类型', kindLabel(detailItem.kind)),
             field('优先级', detailItem.priority === 'high' ? 'high' : 'normal'),
@@ -821,9 +930,29 @@ window.__ModuleLoader__.load({
     /**
      * Sidebar glyph. The sidebar owns the button and passes its own size
      * (16 expanded, 18 collapsed); it resolves the label from our metadata.
+     *
+     * The row renders one aria-hidden icon span plus the label span and offers
+     * no trailing slot, so both unread bubbles have to be drawn inside this
+     * component. They are absolutely positioned children of the wrapper span
+     * (the positioning frame), which is why the wrapper is inline-flex: the icon
+     * stays the only thing that sizes the box, so the glyph never grows or
+     * drifts out of centre. A zero count renders nothing at all.
      */
     function InboxGlyph(props) {
-      return icon('inbox', props?.size ?? 16);
+      const unread = useUnreadBadge(props?.sessions);
+      const sessionText = badgeText(unread.sessionUnread);
+      const globalText = badgeText(unread.globalUnread);
+      return h('span', { style: styles.glyphWrap },
+        icon('inbox', props?.size ?? 16),
+        sessionText === '' ? null : h('span', {
+          style: styles.glyphBadgeSession,
+          title: '本会话 ' + String(unread.sessionUnread) + ' 条未读',
+        }, sessionText),
+        globalText === '' ? null : h('span', {
+          style: styles.glyphBadgeGlobal,
+          title: '全局 ' + String(unread.globalUnread) + ' 条未读',
+        }, globalText),
+      );
     }
 
     /**
@@ -967,6 +1096,7 @@ window.__ModuleLoader__.load({
           id: PANEL_ID,
           order: PANEL_ORDER,
           label: '收件箱',
+          inject: () => ({ sessions }),
         }, InboxGlyph)), 'letterbox: sidebar row');
         ctx.effect(() => ctx.slots.inject('main', () => ctx.slots.register({
           name: 'main',
