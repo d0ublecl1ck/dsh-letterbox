@@ -13,6 +13,8 @@
 - [ ] 侧栏角标（`useUnreadBadge`）与左下角卡片组（`CardDeck` 复用 `useLedger`）各自 5s 轮询同一个 `/letterbox/list`，每 5 秒两次轻请求是刻意的现状；要合并必须改结构，别顺手改。记录：2026-11-02
 - [ ] 详情页操作行（标记为已读 / 上一封 / 下一封）现在在正文下方、字段表上方；再动详情或列表布局时，同时核对 `styles.actionRow` 与 README「用法」里那段详情描述。记录：2026-11-02
 - [ ] 卡片组定位靠 `useDeckAnchor`：左缘 = 应用 frame（`[data-shell-bottom]` 的父元素）`rect.left` + 计算样式 `grid-template-columns` 的第一条轨道；`data-sidebar-collapsed` 只在折叠态存在于 frame 上，不能当主锚点。bottom = composer dock 里那个 0 尺寸探针的 `top` + 12。真机验收时在展开态、折叠态、窗口缩放各确认一次这两个数，否则卡片会跑到侧栏上或压住输入框。记录：2026-11-02
-- [ ] 卡片叠放靠 transform：堆叠态 `translateY(-index*3px) scale(1-index*0.02)`，展开态 `translateY(-index*96px)`；`DECK_SLOT = 96` 同时也是卡片 `minHeight`/`maxHeight`，改卡片内容高度必须同步这个常量，否则展开列表会互相压住。记录：2026-11-02
+- [ ] 卡片两种布局共用同一批节点：叠放态 `position:absolute` + `translateY(-index*3px) scale(1-index*0.02)`、`minHeight/maxHeight = DECK_SLOT(96)` + 两行截断；列表态改成 `position:relative`、高度由内容决定、正文不截断。`DECK_SLOT` 现在只管叠放态，列表态不再用它算位移，改卡片内容高度不会影响列表排布。记录：2026-11-02
+- [ ] 列表态容器是 `styles.deckList`（flex column、`maxHeight: 60vh`、`overflowY: auto`），卡片在里面走正常文档流；不要再引入按 `DECK_SLOT` 算的 transform 位移，否则正文会被压回固定槽高。切换只有 `.lbx-deck-fade` 的 120ms 淡入，这段样式由卡片组自己注入（面板那份 `STYLE_TEXT` 只在面板挂载时存在，卡片组不能依赖它）。记录：2026-11-02
+- [ ] 卡片上只有三类按钮：选项（有 options 时）、已读、回复；「展开 / 收起」按钮与 `openId` 状态已删除，叠放态点击卡片主体是触屏的展开替代（`opened` 态）。别再把它加回来。记录：2026-11-02
 - [ ] 卡片组上限 `DECK_MAX = 8`，其余折成「还有 N 条」（只在展开态出现，已与需求方确认，别改成常显）；`prefers-reduced-motion` 下所有过渡直接关闭。卡片节点数超过 10 是已确认的例外：选项按钮必须逐项真实渲染，别再为凑节点数把它们藏进二级菜单。记录：2026-11-02
 - [ ] 答复走认证路由 `POST /letterbox/answer`（choice 或 note），答复与已读在同一写操作里完成；卡片成功后用本地 `doneIds` 立即移除，不等 5s 轮询。模型侧的 `letterbox_answer` 只读，别再给它加写能力。记录：2026-11-02

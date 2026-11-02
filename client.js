@@ -548,11 +548,21 @@ window.__ModuleLoader__.load({
         border: '1px solid var(--dsw-alias-border-secondary, rgba(0,0,0,0.16))',
         background: 'transparent', color: 'inherit', outline: 'none',
       },
-      deckMore: {
-        position: 'absolute', left: 0, right: 0, height: 26, padding: 0, border: 'none',
-        background: 'transparent', color: 'inherit', opacity: 0.7, fontSize: 11,
-        cursor: 'pointer', pointerEvents: 'auto', textAlign: 'left',
+      // Stacked: the cards are absolutely positioned inside a zero-height box, so
+      // the deck never reserves space in the conversation above the composer.
+      deckStack: { position: 'relative', height: 0 },
+      // Listed: real document flow, so every card can be as tall as its text. The
+      // 60vh cap keeps the deck off the top of the window; the overflow lives here
+      // rather than on the deck root so the scrollbar belongs to the list.
+      deckList: {
+        display: 'flex', flexDirection: 'column', gap: 8,
+        maxHeight: '60vh', overflowY: 'auto', overscrollBehavior: 'contain',
       },
+      deckMore: {
+        width: '100%', padding: '6px 2px', border: 'none', background: 'transparent',
+        color: 'inherit', opacity: 0.7, fontSize: 11, cursor: 'pointer', textAlign: 'left',
+      },
+      deckError: { fontSize: 11, color: 'var(--dsw-alias-text-warning, #b26a00)' },
       // Zero-size flow node inside the composer dock: its rect is the composer's
       // top edge, which is what the deck anchors to.
       probe: { display: 'block', width: 0, height: 0, margin: 0, padding: 0, overflow: 'hidden' },
@@ -988,6 +998,15 @@ window.__ModuleLoader__.load({
     const DECK_SLOT = 96;
     /** How far each card behind the top one peeks out while stacked. */
     const DECK_PEEK = 3;
+    /**
+     * The only stylesheet the deck needs: swapping the stack for the list is a
+     * relayout, not a transform, so the transition is a 120ms opacity fade on the
+     * list itself. The panel owns the big sheet; this one is injected by the deck
+     * because the deck can mount while the panel has never been opened.
+     */
+    const DECK_STYLE_TEXT = '@keyframes lbx-deck-fade{from{opacity:0}to{opacity:1}}'
+      + '.lbx-deck-fade{animation:lbx-deck-fade 120ms ease}'
+      + '@media (prefers-reduced-motion: reduce){.lbx-deck-fade{animation:none}}';
 
     /**
      * Where the deck lives: the sidebar's right edge and the composer's top.
@@ -1072,10 +1091,16 @@ window.__ModuleLoader__.load({
      * default and turn into a list while the pointer is over the deck, which is
      * the whole reason a card can be answered without opening the inbox panel.
      *
+     * The two states are two layouts of the same nodes, not two components: the
+     * stack pins every card to a fixed slot and clamps the text, the list hands
+     * the height back to the content so the full note is readable, capped at 60vh
+     * with its own scroller. Only the stack animates position (transform); the
+     * swap into the list is a 120ms opacity fade, because animating a height is
+     * exactly what breaks a list that is supposed to show everything.
+     *
      * Performance rules: one poll (the existing useLedger), no timers, at most
-     * DECK_MAX cards, and a card is four nodes plus its buttons. Motion is
-     * transform / opacity / max-height only, and none at all when the platform
-     * asks for reduced motion.
+     * DECK_MAX cards, and a card is four nodes plus its buttons. Nothing plays at
+     * all when the platform asks for reduced motion.
      */
     function CardDeck({ sessions, layout }) {
       const sessionId = useSessionId(sessions);
@@ -1084,7 +1109,9 @@ window.__ModuleLoader__.load({
       const anchor = useDeckAnchor(probeRef);
       const [portalHost, setPortalHost] = React.useState(null);
       const [hovered, setHovered] = React.useState(false);
-      const [openId, setOpenId] = React.useState(null);
+      // Touch has no hover: tapping a stacked card flips this, and tapping again
+      // puts the deck back into the stack.
+      const [opened, setOpened] = React.useState(false);
       const [replyId, setReplyId] = React.useState(null);
       const [draft, setDraft] = React.useState('');
       const [busyId, setBusyId] = React.useState(null);
@@ -1114,6 +1141,15 @@ window.__ModuleLoader__.load({
       }, []);
 
       React.useEffect(() => {
+        if (typeof document === 'undefined' || document.head === null || typeof document.createElement !== 'function') return undefined;
+        const sheet = document.createElement('style');
+        sheet.setAttribute('data-letterbox-deck-styles', 'true');
+        sheet.textContent = DECK_STYLE_TEXT;
+        document.head.appendChild(sheet);
+        return () => { if (sheet.parentNode !== null) sheet.parentNode.removeChild(sheet); };
+      }, []);
+
+      React.useEffect(() => {
         if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined;
         const query = window.matchMedia('(prefers-reduced-motion: reduce)');
         const sync = () => setReduced(query.matches === true);
@@ -1129,23 +1165,24 @@ window.__ModuleLoader__.load({
       const unread = ledger.items.filter((item) => !item.read && doneIds.indexOf(item.id) === -1);
       const shown = unread.slice(0, DECK_MAX);
       const rest = unread.length - shown.length;
-      const pinned = openId !== null || replyId !== null;
+      const pinned = opened || replyId !== null;
       const listed = hovered || pinned;
 
       // Answering the last card unmounts the deck, and a mouseleave that never
-      // happens would leave 'hovered' (or an open card id) behind: the next card
-      // would then appear already expanded, with an invisible box over the
-      // conversation. Drop every pointer-driven state the moment the ids change.
+      // happens would leave 'hovered' or 'opened' behind: the next card would then
+      // appear already listed. Drop every pointer-driven state when the ids change.
       const shownKey = shown.map((item) => item.id).join(',');
       React.useEffect(() => {
         const ids = shownKey === '' ? [] : shownKey.split(',');
-        if (openId !== null && ids.indexOf(openId) === -1) setOpenId(null);
         if (replyId !== null && ids.indexOf(replyId) === -1) {
           setReplyId(null);
           setDraft('');
         }
-        if (ids.length === 0) setHovered(false);
-      }, [shownKey, openId, replyId]);
+        if (ids.length === 0) {
+          setHovered(false);
+          setOpened(false);
+        }
+      }, [shownKey, replyId]);
 
       const finish = (id) => setDoneIds((previous) => (previous.indexOf(id) === -1 ? previous.concat(id) : previous));
 
@@ -1181,22 +1218,23 @@ window.__ModuleLoader__.load({
       };
 
       const renderCard = (item, index) => {
-        const open = openId === item.id;
         const busy = busyId === item.id;
         const locked = busyId !== null;
         const dim = locked && !busy ? 0.5 : 1;
-        const style = {
-          ...styles.deckCard,
-          transform: listed
-            ? 'translateY(' + String(-index * DECK_SLOT) + 'px)'
-            : 'translateY(' + String(-index * DECK_PEEK) + 'px) scale(' + String(1 - Math.min(index, 5) * 0.02) + ')',
-          opacity: listed ? 1 : (index === 0 ? 1 : 0.92),
-          zIndex: open ? 60 : 40 - index,
-          minHeight: DECK_SLOT,
-          maxHeight: open ? 480 : DECK_SLOT,
-          boxShadow: open ? '0 12px 32px rgba(0,0,0,0.22)' : styles.deckCard.boxShadow,
-        };
-        if (!reduced) style.transition = 'transform 180ms ease, opacity 180ms ease, max-height 180ms ease';
+        // Two layouts, one node. Stacked keeps a fixed slot so the cards can peek
+        // at each other; listed hands the height back to the content, which is the
+        // whole point of listing it.
+        const style = listed
+          ? { ...styles.deckCard, position: 'relative', minHeight: 0 }
+          : {
+            ...styles.deckCard,
+            transform: 'translateY(' + String(-index * DECK_PEEK) + 'px) scale(' + String(1 - Math.min(index, 5) * 0.02) + ')',
+            opacity: index === 0 ? 1 : 0.92,
+            zIndex: 40 - index,
+            minHeight: DECK_SLOT,
+            maxHeight: DECK_SLOT,
+          };
+        if (!reduced && !listed) style.transition = 'transform 180ms ease, opacity 180ms ease';
 
         const button = (label, onClick) => h('button', {
           type: 'button',
@@ -1243,9 +1281,8 @@ window.__ModuleLoader__.load({
             button('回复', () => {
               setReplyId(item.id);
               setDraft('');
-              setOpenId(item.id);
+              setOpened(true);
             }),
-            button(open ? '收起' : '展开', () => setOpenId(open ? null : item.id)),
           );
 
         const meta = kindLabel(item.kind) + (item.priority === 'high' ? ' · 高' : '') + ' · ' + formatClock(item.createdAt);
@@ -1254,10 +1291,15 @@ window.__ModuleLoader__.load({
           key: item.id,
           style,
           'data-card': item.id,
-          onClick: () => setOpenId(open ? null : item.id),
+          // Touch has no hover: a tap on a stacked card lists the deck, and a tap
+          // on a card that was opened this way puts it back.
+          onClick: () => {
+            if (!listed) setOpened(true);
+            else if (opened) setOpened(false);
+          },
         },
           h('div', { style: styles.deckMeta }, meta),
-          h('div', { style: open ? styles.deckTextOpen : styles.deckText }, item.text),
+          h('div', { style: listed ? styles.deckTextOpen : styles.deckText }, item.text),
           foot,
         );
       };
@@ -1268,7 +1310,6 @@ window.__ModuleLoader__.load({
           ...styles.deck,
           left: anchor.left + 12,
           bottom: anchor.bottom,
-          height: listed ? shown.length * DECK_SLOT + (rest > 0 ? 26 : 0) : 0,
           // The box itself only answers the pointer while it is being used: an
           // always-on transparent rectangle over the conversation would swallow
           // clicks that were never meant for the deck.
@@ -1277,19 +1318,21 @@ window.__ModuleLoader__.load({
         onMouseEnter: () => setHovered(true),
         onMouseLeave: () => setHovered(false),
       },
-        rest > 0 && listed ? h('button', {
-          type: 'button',
-          className: 'lbx-ghost',
-          style: { ...styles.deckMore, bottom: shown.length * DECK_SLOT },
-          onClick: openInbox,
-        }, '还有 ' + String(rest) + ' 条') : null,
-        error === null ? null : h('div', {
-          style: {
-            position: 'absolute', left: 0, bottom: shown.length * DECK_SLOT + 6,
-            fontSize: 11, color: 'var(--dsw-alias-text-warning, #b26a00)', pointerEvents: 'none',
-          },
-        }, error),
-        shown.map(renderCard),
+        h('div', {
+          className: listed && !reduced ? 'lbx-deck-fade' : undefined,
+          style: listed ? styles.deckList : styles.deckStack,
+        },
+          shown.map(renderCard),
+          listed && rest > 0 ? h('button', {
+            type: 'button',
+            className: 'lbx-ghost',
+            style: styles.deckMore,
+            onClick: openInbox,
+          }, '还有 ' + String(rest) + ' 条') : null,
+          error === null ? null : h('div', {
+            style: listed ? styles.deckError : { ...styles.deckError, position: 'absolute', left: 0, bottom: DECK_SLOT + 6 },
+          }, error),
+        ),
       ), portalHost);
 
       return h(React.Fragment, null, probe, deck);
