@@ -457,39 +457,49 @@ function deckClamp() {
   );
 }
 
-test('clampDeckAnchor places the deck at the sidebar edge, above the composer', () => {
+test('clampDeckAnchor derives the bottom from the frame, not the probe', () => {
   const clamp = deckClamp();
-  const anchor = clamp({ frameLeft: 0, sidebarWidth: 280, probeTop: 780, probeHeight: 1, chromeHeight: 0, viewportWidth: 1440, viewportHeight: 900 });
-  assert.deepEqual(anchor, { left: 292, bottom: 132, probeBottom: 132, minBottom: 44, ceiling: 540 });
+  // The frame fills the window: its bottom edge is the window's bottom edge, so
+  // the raw distance is 12px and the 44px floor is what the deck actually uses.
+  const anchor = clamp({ frameLeft: 0, frameBottom: 900, frameHeight: 900, sidebarWidth: 280, probeTop: 780, probeHeight: 1, chromeHeight: 0, viewportWidth: 1440, viewportHeight: 900 });
+  assert.deepEqual(anchor, { left: 292, bottom: 44, probeBottom: 132, minBottom: 44, ceiling: 540, source: 'frame', frameGap: 0 });
 });
 
-test('clampDeckAnchor falls back when the probe cannot be trusted', () => {
+test('clampDeckAnchor adds the bottom row exactly once', () => {
   const clamp = deckClamp();
-  const flat = clamp({ frameLeft: 0, sidebarWidth: 280, probeTop: 780, probeHeight: 0, chromeHeight: 0, viewportWidth: 1440, viewportHeight: 900 });
-  assert.equal(flat.probeBottom, null, 'a zero-height probe says nothing');
-  assert.equal(flat.bottom, 132, 'fallback bottom');
-  const below = clamp({ frameLeft: 0, sidebarWidth: 280, probeTop: 950, probeHeight: 1, chromeHeight: 0, viewportWidth: 1440, viewportHeight: 900 });
-  assert.equal(below.probeBottom, null, 'a probe below the viewport says nothing');
-  assert.equal(below.bottom, 132);
-  const junk = clamp({ frameLeft: Number.NaN, sidebarWidth: Number.NaN, probeTop: Number.NaN, probeHeight: 0, chromeHeight: Number.NaN, viewportWidth: 1200, viewportHeight: 800 });
+  // The bottom row lives inside the frame, so the frame edge is already below it:
+  // gap (0) + chrome (60) + 12 = 72, not 132.
+  const anchor = clamp({ frameLeft: 0, frameBottom: 900, frameHeight: 900, sidebarWidth: 280, probeTop: 880, probeHeight: 1, chromeHeight: 60, viewportWidth: 1440, viewportHeight: 900 });
+  assert.equal(anchor.minBottom, 72, '44 or the 60px strip plus 12');
+  assert.equal(anchor.bottom, 72, 'frame + one chrome, never two');
+  assert.equal(anchor.probeBottom, 32, 'the probe candidate is still reported');
+  const floating = clamp({ frameLeft: 0, frameBottom: 860, frameHeight: 860, sidebarWidth: 280, probeTop: 700, probeHeight: 1, chromeHeight: 0, viewportWidth: 1440, viewportHeight: 900 });
+  assert.equal(floating.frameGap, 40);
+  assert.equal(floating.bottom, 52, '40 of frame gap plus the 12px gutter');
+});
+
+test('clampDeckAnchor only falls back to the probe when the frame is unmeasurable', () => {
+  const clamp = deckClamp();
+  const probe = clamp({ frameLeft: 0, frameBottom: Number.NaN, frameHeight: 0, sidebarWidth: 280, probeTop: 780, probeHeight: 1, chromeHeight: 0, viewportWidth: 1440, viewportHeight: 900 });
+  assert.equal(probe.source, 'probe');
+  assert.equal(probe.bottom, 132);
+  const nothing = clamp({ frameLeft: 0, frameBottom: Number.NaN, frameHeight: 0, sidebarWidth: 280, probeTop: 950, probeHeight: 1, chromeHeight: 0, viewportWidth: 1440, viewportHeight: 900 });
+  assert.equal(nothing.source, 'fallback');
+  assert.equal(nothing.probeBottom, null);
+  assert.equal(nothing.bottom, 132);
+  const junk = clamp({ frameLeft: Number.NaN, frameBottom: Number.NaN, frameHeight: Number.NaN, sidebarWidth: Number.NaN, probeTop: Number.NaN, probeHeight: 0, chromeHeight: Number.NaN, viewportWidth: 1200, viewportHeight: 800 });
   assert.equal(junk.left, 12);
   assert.equal(junk.bottom, 132);
 });
 
-test('clampDeckAnchor keeps the deck above the host bottom chrome', () => {
-  const clamp = deckClamp();
-  const anchor = clamp({ frameLeft: 0, sidebarWidth: 280, probeTop: 880, probeHeight: 1, chromeHeight: 60, viewportWidth: 1440, viewportHeight: 900 });
-  assert.equal(anchor.minBottom, 72, '44 or the 60px status strip plus 12');
-  assert.equal(anchor.probeBottom, 32);
-  assert.equal(anchor.bottom, 72, 'the strip wins over the probe');
-});
-
 test('clampDeckAnchor never lets the 340px box leave the viewport', () => {
   const clamp = deckClamp();
-  const narrow = clamp({ frameLeft: 0, sidebarWidth: 280, probeTop: 700, probeHeight: 1, chromeHeight: 0, viewportWidth: 400, viewportHeight: 800 });
+  const narrow = clamp({ frameLeft: 0, frameBottom: 800, frameHeight: 800, sidebarWidth: 280, probeTop: 700, probeHeight: 1, chromeHeight: 0, viewportWidth: 400, viewportHeight: 800 });
   assert.equal(narrow.left + 340, 400 - 12);
-  const short = clamp({ frameLeft: 0, sidebarWidth: 280, probeTop: 700, probeHeight: 1, chromeHeight: 0, viewportWidth: 1440, viewportHeight: 100 });
+  const short = clamp({ frameLeft: 0, frameBottom: 100, frameHeight: 100, sidebarWidth: 280, probeTop: 90, probeHeight: 1, chromeHeight: 0, viewportWidth: 1440, viewportHeight: 100 });
   assert.equal(short.ceiling, 60, '60% of a 100px viewport');
-  assert.equal(short.bottom, 60);
+  assert.equal(short.bottom, 44, 'the floor still wins on a short window');
+  const shortFallback = clamp({ frameLeft: 0, frameBottom: Number.NaN, frameHeight: 0, sidebarWidth: 280, probeTop: Number.NaN, probeHeight: 0, chromeHeight: 0, viewportWidth: 1440, viewportHeight: 100 });
+  assert.equal(shortFallback.bottom, 60, 'the fallback is still capped by the ceiling');
 });
 

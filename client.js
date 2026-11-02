@@ -607,6 +607,14 @@ window.__ModuleLoader__.load({
         background: 'var(--dsw-alias-bg-primary, #ffffff)', color: 'inherit',
         boxShadow: '0 2px 8px rgba(0,0,0,0.16)',
       },
+      // DECK_DEBUG readout: final bottom / probe candidate / window height.
+      // Sits just under the deck box, in the gap the clamp keeps free.
+      deckDebug: {
+        position: 'absolute', left: 0, bottom: 0, transform: 'translateY(100%)',
+        padding: '1px 4px', borderRadius: 4, fontSize: 10, fontFamily: 'monospace',
+        background: 'var(--dsw-alias-bg-primary, #ffffff)', color: 'var(--dsw-alias-text-warning, #b26a00)',
+        border: '1px solid currentColor', whiteSpace: 'nowrap', pointerEvents: 'none', zIndex: 80,
+      },
       // Off-screen but still announced: the count changes, the cards never do.
       srOnly: {
         position: 'absolute', width: 1, height: 1, margin: -1, padding: 0,
@@ -1088,15 +1096,24 @@ window.__ModuleLoader__.load({
     /**
      * Clamp one deck measurement into the viewport.
      *
-     * Pure on purpose: the anchor used to be "whatever the probe said", which is
-     * how a half-laid-out composer parked the deck under the window edge. Every
-     * input may be missing or junk - a clamp that throws is worse than a clamp
-     * that picks a safe box.
+     * Pure on purpose: every input may be missing or junk - a clamp that throws is
+     * worse than a clamp that picks a safe box.
      *
-     * @param input - frameLeft, sidebarWidth, probeTop, probeHeight, chromeHeight,
-     *   viewportWidth, viewportHeight (all numbers, any may be NaN/undefined).
+     * The vertical anchor is derived from the app frame, not from the composer.
+     * The frame is the grid that owns the window (content row + bottom row), so
+     * `innerHeight - frameBottom` is the distance from the frame's lower edge to
+     * the window's, and that number is a property of the layout rather than of a
+     * component that may not have been laid out yet. The bottom row (a profile's
+     * status strip, when it renders one) sits INSIDE the frame, so the frame's
+     * bottom edge is already below it: adding `chromeHeight` once moves the deck
+     * from the frame edge up to the content edge, and it is never added twice.
+     * The composer probe is only a fallback for a frame that cannot be measured.
+     *
+     * @param input - frameLeft, frameBottom, frameHeight, sidebarWidth, probeTop,
+     *   probeHeight, chromeHeight, viewportWidth, viewportHeight (any may be junk).
      * @returns {{left: number, bottom: number, probeBottom: number|null,
-     *   minBottom: number, ceiling: number}} the final box plus its bounds.
+     *   minBottom: number, ceiling: number, source: string, frameGap: number}}
+     *   the final box, the probe candidate it ignored or used, and the bounds.
      */
     function clampDeckAnchor(input) {
       const viewportWidth = Number.isFinite(input.viewportWidth) ? input.viewportWidth : 0;
@@ -1110,11 +1127,21 @@ window.__ModuleLoader__.load({
       const left = Math.max(12, Math.min(rawLeft, viewportWidth - 12 - DECK_WIDTH));
 
       const minBottom = Math.max(DECK_MIN_BOTTOM, chromeHeight + 12);
-      const usable = Number.isFinite(input.probeTop) && probeHeight > 0 && input.probeTop < viewportHeight;
-      const probeBottom = usable ? viewportHeight - input.probeTop + 12 : DECK_FALLBACK_BOTTOM;
       const ceiling = Math.max(viewportHeight * 0.6, minBottom);
-      const bottom = Math.min(Math.max(probeBottom, minBottom), ceiling);
-      return { left, bottom, probeBottom: usable ? probeBottom : null, minBottom, ceiling };
+
+      const frameUsable = Number.isFinite(input.frameBottom) && Number.isFinite(input.frameHeight) && input.frameHeight > 0;
+      const frameGap = frameUsable ? Math.max(0, viewportHeight - input.frameBottom) : 0;
+      const fromFrame = frameGap + chromeHeight + 12;
+
+      const probeUsable = Number.isFinite(input.probeTop) && probeHeight > 0 && input.probeTop < viewportHeight;
+      const probeBottom = probeUsable ? viewportHeight - input.probeTop + 12 : null;
+
+      const rawBottom = frameUsable
+        ? fromFrame
+        : (probeBottom === null ? DECK_FALLBACK_BOTTOM : probeBottom);
+      const bottom = Math.min(Math.max(rawBottom, minBottom), ceiling);
+      const source = frameUsable ? 'frame' : (probeBottom === null ? 'fallback' : 'probe');
+      return { left, bottom, probeBottom, minBottom, ceiling, source, frameGap };
     }
 
     /**
@@ -1172,6 +1199,8 @@ window.__ModuleLoader__.load({
 
           const clamped = clampDeckAnchor({
             frameLeft: frameRect.left,
+            frameBottom: frameRect.bottom,
+            frameHeight: frameRect.height,
             sidebarWidth,
             probeTop: probeRect.top,
             probeHeight: probeRect.height,
@@ -1187,10 +1216,10 @@ window.__ModuleLoader__.load({
               sidebarTrack: sidebarWidth,
               probe: { top: probeRect.top, height: probeRect.height },
               bottomChrome: chrome,
-              // Both candidates on purpose: what the probe implied, and what the
-              // deck actually uses after the clamp.
-              candidates: { left: frameRect.left + (sidebarWidth > 0 ? sidebarWidth : 0) + 12, bottom: clamped.probeBottom },
-              clamped: { left: clamped.left, bottom: clamped.bottom, minBottom: clamped.minBottom, ceiling: clamped.ceiling },
+              // Both candidates on purpose: what the frame derives, what the probe
+              // would have said, and which one won.
+              candidates: { fromFrame: clamped.frameGap + chrome + 12, fromProbe: clamped.probeBottom },
+              clamped: { left: clamped.left, bottom: clamped.bottom, minBottom: clamped.minBottom, ceiling: clamped.ceiling, source: clamped.source },
               viewport: { width: viewportWidth, height: viewportHeight },
             });
           }
@@ -1200,7 +1229,7 @@ window.__ModuleLoader__.load({
             && Math.abs(previous.bottom - clamped.bottom) < 0.5
             && previous.probeBottom === clamped.probeBottom
             ? previous
-            : { left: clamped.left, bottom: clamped.bottom, probeBottom: clamped.probeBottom }));
+            : { left: clamped.left, bottom: clamped.bottom, probeBottom: clamped.probeBottom, source: clamped.source }));
         };
         const schedule = () => {
           if (scheduled !== 0) return;
@@ -1616,7 +1645,9 @@ window.__ModuleLoader__.load({
         ref: deckRef,
         style: {
           ...styles.deck,
-          left: anchor.left + 12,
+          // clampDeckAnchor already added the 12px gutter; adding it again here
+          // pushed the deck 12px to the right of where it was measured.
+          left: anchor.left,
           bottom: anchor.bottom,
           // Only a pinned deck owns the pointer: an always-on transparent
           // rectangle over the conversation would swallow clicks that were never
@@ -1627,6 +1658,10 @@ window.__ModuleLoader__.load({
         onPointerLeave,
         onFocus: () => setPinned(true),
       },
+        DECK_DEBUG ? h('div', { style: styles.deckDebug },
+          String(Math.round(anchor.bottom)) + ' / '
+          + (anchor.probeBottom === null ? 'n/a' : String(Math.round(anchor.probeBottom))) + ' / '
+          + String(Math.round(typeof window === 'undefined' ? 0 : window.innerHeight))) : null,
         flow
           ? h('div', {
             className: listed && !reduced ? 'lbx-deck-fade' : undefined,
