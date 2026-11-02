@@ -434,3 +434,62 @@ test('addItem keeps options and listItems exposes them', () => {
   assert.equal(listItems(state, 's1')[0].answer, null);
 });
 
+// The deck is placed by a pure clamp inside client.js. It is evaluated here from
+// source (the browser half cannot be imported) with the real constants, so the
+// numbers in a bug report can be reproduced instead of guessed at.
+function deckClamp() {
+  const source = readFileSync(new URL('../client.js', import.meta.url), 'utf8');
+  const start = source.indexOf('function clampDeckAnchor(');
+  assert.notEqual(start, -1, 'client.js must define clampDeckAnchor');
+  const rest = source.slice(start);
+  const end = rest.search(/\n    \}/);
+  assert.notEqual(end, -1, 'clampDeckAnchor must end at four-space indentation');
+  const body = rest.slice(0, end + 6);
+  const numberConst = (name) => {
+    const match = new RegExp('const ' + name + ' = ([0-9.]+);').exec(source);
+    assert.notEqual(match, null, 'client.js must define ' + name);
+    return Number(match[1]);
+  };
+  return new Function('DECK_MIN_BOTTOM', 'DECK_FALLBACK_BOTTOM', 'DECK_WIDTH', 'return (' + body + ');')(
+    numberConst('DECK_MIN_BOTTOM'),
+    numberConst('DECK_FALLBACK_BOTTOM'),
+    numberConst('DECK_WIDTH'),
+  );
+}
+
+test('clampDeckAnchor places the deck at the sidebar edge, above the composer', () => {
+  const clamp = deckClamp();
+  const anchor = clamp({ frameLeft: 0, sidebarWidth: 280, probeTop: 780, probeHeight: 1, chromeHeight: 0, viewportWidth: 1440, viewportHeight: 900 });
+  assert.deepEqual(anchor, { left: 292, bottom: 132, probeBottom: 132, minBottom: 44, ceiling: 540 });
+});
+
+test('clampDeckAnchor falls back when the probe cannot be trusted', () => {
+  const clamp = deckClamp();
+  const flat = clamp({ frameLeft: 0, sidebarWidth: 280, probeTop: 780, probeHeight: 0, chromeHeight: 0, viewportWidth: 1440, viewportHeight: 900 });
+  assert.equal(flat.probeBottom, null, 'a zero-height probe says nothing');
+  assert.equal(flat.bottom, 132, 'fallback bottom');
+  const below = clamp({ frameLeft: 0, sidebarWidth: 280, probeTop: 950, probeHeight: 1, chromeHeight: 0, viewportWidth: 1440, viewportHeight: 900 });
+  assert.equal(below.probeBottom, null, 'a probe below the viewport says nothing');
+  assert.equal(below.bottom, 132);
+  const junk = clamp({ frameLeft: Number.NaN, sidebarWidth: Number.NaN, probeTop: Number.NaN, probeHeight: 0, chromeHeight: Number.NaN, viewportWidth: 1200, viewportHeight: 800 });
+  assert.equal(junk.left, 12);
+  assert.equal(junk.bottom, 132);
+});
+
+test('clampDeckAnchor keeps the deck above the host bottom chrome', () => {
+  const clamp = deckClamp();
+  const anchor = clamp({ frameLeft: 0, sidebarWidth: 280, probeTop: 880, probeHeight: 1, chromeHeight: 60, viewportWidth: 1440, viewportHeight: 900 });
+  assert.equal(anchor.minBottom, 72, '44 or the 60px status strip plus 12');
+  assert.equal(anchor.probeBottom, 32);
+  assert.equal(anchor.bottom, 72, 'the strip wins over the probe');
+});
+
+test('clampDeckAnchor never lets the 340px box leave the viewport', () => {
+  const clamp = deckClamp();
+  const narrow = clamp({ frameLeft: 0, sidebarWidth: 280, probeTop: 700, probeHeight: 1, chromeHeight: 0, viewportWidth: 400, viewportHeight: 800 });
+  assert.equal(narrow.left + 340, 400 - 12);
+  const short = clamp({ frameLeft: 0, sidebarWidth: 280, probeTop: 700, probeHeight: 1, chromeHeight: 0, viewportWidth: 1440, viewportHeight: 100 });
+  assert.equal(short.ceiling, 60, '60% of a 100px viewport');
+  assert.equal(short.bottom, 60);
+});
+

@@ -12,7 +12,7 @@
 - [ ] 侧栏未读角标在折叠态（36×36 行、18px 图标）的视觉密度还没在真实界面确认过：两个 12px 药丸贴着图标四角，目前 offset 是 ±4px，要调等用户看过再动。记录：2026-11-02
 - [ ] 侧栏角标（`useUnreadBadge`）与左下角卡片组（`CardDeck` 复用 `useLedger`）各自 5s 轮询同一个 `/letterbox/list`，每 5 秒两次轻请求是刻意的现状；要合并必须改结构，别顺手改。记录：2026-11-02
 - [ ] 详情页操作行（标记为已读 / 上一封 / 下一封）现在在正文下方、字段表上方；再动详情或列表布局时，同时核对 `styles.actionRow` 与 README「用法」里那段详情描述。记录：2026-11-02
-- [ ] 卡片组定位靠 `useDeckAnchor`：左缘 = 应用 frame（`[data-shell-bottom]` 的父元素）`rect.left` + 计算样式 `grid-template-columns` 的第一条轨道；`data-sidebar-collapsed` 只在折叠态存在于 frame 上，不能当主锚点。bottom = composer dock 里那个 0 尺寸探针的 `top` + 12。真机验收时在展开态、折叠态、窗口缩放各确认一次这两个数，否则卡片会跑到侧栏上或压住输入框。记录：2026-11-02
+- [ ] 卡片组定位靠 `useDeckAnchor` + 纯函数 `clampDeckAnchor`：左缘 = 应用 frame（`[data-shell-bottom]` 的父元素）`rect.left` + `grid-template-columns` 第一条轨道 + 12，再钳进 `[12, innerWidth-12-340]`；下缘 = dock 里 1×1 探针推导值，钳进 `[max(44, 底部行高+12), innerHeight*0.6]`，探针不可用（高度 0 / top 越界 / NaN）回落 132。`data-sidebar-collapsed` 只在折叠态存在，不能当主锚点。要复核数字就开 `DECK_DEBUG`（只打一次：frame rect、首轨、probe rect、两个候选值、钳制后值）；`test/store.test.mjs` 有 `clampDeckAnchor` 的取值测试（从 client.js 源码求值，常量读真值）。记录：2026-11-02
 - [ ] 卡片两种布局共用同一批节点：叠放态 `position:absolute` + `minHeight/maxHeight = DECK_SLOT(96)` + 两行截断；列表态 `position:relative`、高度由内容决定、正文不截断。位移/透明度/截断全部写在卡片组自己注入的样式表里（`.lbx-deck-stack .lbx-card:nth-child(n)` / `.lbx-deck-list .lbx-card`），`DECK_SLOT`、`DECK_PEEK` 通过模板串拼进 CSS，改这两个常量前先确认 CSS 也跟着变。记录：2026-11-02
 - [ ] 列表态容器是 `styles.deckList`（flex column、`maxHeight: 60vh`、`overflowY: auto`），卡片在里面走正常文档流；不要再引入按 `DECK_SLOT` 算的 transform 位移，否则正文会被压回固定槽高。切换只有 `.lbx-deck-fade` 的 120ms 淡入，这段样式由卡片组自己注入（面板那份 `STYLE_TEXT` 只在面板挂载时存在，卡片组不能依赖它）。记录：2026-11-02
 - [ ] 卡片上只有三类按钮：选项（有 options 时）、已读、回复；「展开 / 收起」按钮与 `openId` 状态已删除。展开由 `pinned` 管：click / focusin / 开始回复把它置真，Esc 或组外 pointerdown 置假，外部监听只在 pinned 期间挂。别再按卡片记 openId，也别把展开按钮加回来。记录：2026-11-02
@@ -23,3 +23,5 @@
 - [ ] `useLedger` 的轮询会做快照等价比较（items 的 id 序列 + read + answer.answeredAt + 两个 count），相同就不 `setState`；改 `toPublicItem` 字段时要同步更新 `sameSnapshot`，否则卡片组每 5 秒白重渲染一次。记录：2026-11-02
 - [ ] 卡片组与 `InboxPanel` 没有共享 state：卡组只用 `useLedger(sessionId,'session')` 与 `layout.selectPanel`，面板的列表/详情/搜索状态不会触发卡组重渲染。改这块时别把两者的状态提到同一个 provider。记录：2026-11-02
 - [ ] 焦点回填：最后一个卡片被处理掉、卡组消失时，如果 action 发生的瞬间 focus 还在组内（节点已卸载，只能在那时记录），把焦点送回页面的 `textarea` 或 `[contenteditable]`。记录：2026-11-02
+- [ ] 宿主布局事实：应用 frame 是 `display:grid; grid-template-rows:minmax(0,1fr) auto; overflow:hidden`；`[data-shell-bottom]` 就是布局包里的 `shell.bottom` 槽位，桌面 profile 默认没人填它（只有 `dsh-experimental-inspector` 与 cordis runner 示例会），所以实测高度通常是 0 —— 下缘地板取 `max(44, 高度+12)` 正是为此：有状态条自动上抬，没有时保底 44。记录：2026-11-02
+- [ ] 卡片组 portal 宿主的 `z-index` 是 2147480000（原来 999，会被页内 chrome 压住）；容器本体仍 `pointer-events:none`，只在 hovered/pinned 时开。别把层级降回去。记录：2026-11-02

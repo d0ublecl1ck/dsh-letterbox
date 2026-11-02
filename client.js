@@ -554,6 +554,9 @@ window.__ModuleLoader__.load({
       // The deck is a fixed box anchored to the sidebar's right edge; its
       // children are absolutely positioned so a card can move between 'stacked'
       // and 'listed' by transform alone, with no layout animation.
+      // width is the literal 340: this object is built before DECK_WIDTH exists
+      // (that constant lives with the deck logic further down) and the horizontal
+      // clamp uses DECK_WIDTH to keep the same box on screen.
       deck: { position: 'fixed', width: 340, pointerEvents: 'none', zIndex: 998 },
       // Card visuals only: position, height and the stack transform live in the
       // deck's stylesheet so switching between stack and list is a class swap, not
@@ -609,9 +612,11 @@ window.__ModuleLoader__.load({
         position: 'absolute', width: 1, height: 1, margin: -1, padding: 0,
         overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap', border: 0,
       },
-      // Zero-size flow node inside the composer dock: its rect is the composer's
-      // top edge, which is what the deck anchors to.
-      probe: { display: 'block', width: 0, height: 0, margin: 0, padding: 0, overflow: 'hidden' },
+      // Near-zero flow node inside the composer dock: its rect is the composer's
+      // top edge, which is what the deck anchors to. It keeps a 1px box on
+      // purpose - a 0x0 node cannot be told apart from a node that was never laid
+      // out, and the anchor has to know the difference.
+      probe: { display: 'block', width: 1, height: 1, margin: 0, padding: 0, opacity: 0, pointerEvents: 'none' },
 
       // ── sidebar glyph bubbles ────────────────────────────────────────────
       // The wrapper is the positioning frame; inline-flex keeps the icon the
@@ -1046,6 +1051,18 @@ window.__ModuleLoader__.load({
     const DECK_SLOT = 96;
     /** How far each card behind the front one peeks out while stacked. */
     const DECK_PEEK = 3;
+    /**
+     * Floor for the deck's bottom edge. 44 clears the window's bottom chrome (a
+     * status bar, an info strip) without pushing the deck up into the transcript;
+     * the measured height of the host's bottom row is added on top of it.
+     */
+    const DECK_MIN_BOTTOM = 44;
+    /** Bottom edge used when the composer probe cannot be measured at all. */
+    const DECK_FALLBACK_BOTTOM = 132;
+    /** The deck's fixed width; the horizontal clamp keeps it on screen. */
+    const DECK_WIDTH = 340;
+    /** Flip to true to log one anchor measurement per mount (numbers, not vibes). */
+    const DECK_DEBUG = false;
     /** Hover is a preview, not a commitment: expand after the pointer settles... */
     const DECK_HOVER_IN_MS = 120;
     /** ...and collapse only after it has really left. */
@@ -1069,6 +1086,38 @@ window.__ModuleLoader__.load({
       + '@media (prefers-reduced-motion: reduce){.lbx-deck-fade{animation:none}.lbx-deck-stack .lbx-card{transition:none}}';
 
     /**
+     * Clamp one deck measurement into the viewport.
+     *
+     * Pure on purpose: the anchor used to be "whatever the probe said", which is
+     * how a half-laid-out composer parked the deck under the window edge. Every
+     * input may be missing or junk - a clamp that throws is worse than a clamp
+     * that picks a safe box.
+     *
+     * @param input - frameLeft, sidebarWidth, probeTop, probeHeight, chromeHeight,
+     *   viewportWidth, viewportHeight (all numbers, any may be NaN/undefined).
+     * @returns {{left: number, bottom: number, probeBottom: number|null,
+     *   minBottom: number, ceiling: number}} the final box plus its bounds.
+     */
+    function clampDeckAnchor(input) {
+      const viewportWidth = Number.isFinite(input.viewportWidth) ? input.viewportWidth : 0;
+      const viewportHeight = Number.isFinite(input.viewportHeight) ? input.viewportHeight : 0;
+      const frameLeft = Number.isFinite(input.frameLeft) ? input.frameLeft : 0;
+      const sidebarWidth = Number.isFinite(input.sidebarWidth) && input.sidebarWidth > 0 ? input.sidebarWidth : 0;
+      const chromeHeight = Number.isFinite(input.chromeHeight) && input.chromeHeight > 0 ? input.chromeHeight : 0;
+      const probeHeight = Number.isFinite(input.probeHeight) ? input.probeHeight : 0;
+
+      const rawLeft = frameLeft + sidebarWidth + 12;
+      const left = Math.max(12, Math.min(rawLeft, viewportWidth - 12 - DECK_WIDTH));
+
+      const minBottom = Math.max(DECK_MIN_BOTTOM, chromeHeight + 12);
+      const usable = Number.isFinite(input.probeTop) && probeHeight > 0 && input.probeTop < viewportHeight;
+      const probeBottom = usable ? viewportHeight - input.probeTop + 12 : DECK_FALLBACK_BOTTOM;
+      const ceiling = Math.max(viewportHeight * 0.6, minBottom);
+      const bottom = Math.min(Math.max(probeBottom, minBottom), ceiling);
+      return { left, bottom, probeBottom: usable ? probeBottom : null, minBottom, ceiling };
+    }
+
+    /**
      * Where the deck lives: the sidebar's right edge and the composer's top.
      *
      * The three-column grid belongs to the app frame, so the sidebar width is the
@@ -1083,15 +1132,24 @@ window.__ModuleLoader__.load({
      * inline style), dock resize and window resize. One animation frame coalesces
      * a burst of notifications into one read - never one read per frame.
      *
-     * @param probeRef - zero-size node rendered inside the composer dock.
-     * @returns {{left: number, bottom: number}|null} the deck's anchor.
+     * Both axes are clamped, because a measurement is only evidence: the probe
+     * can report a rect before the composer is laid out, or after the window has
+     * been resized under it, and an unclamped result parks the deck half off
+     * screen. The bottom also clears the host's own bottom row (the pipeline
+     * shell's status strip, when a profile renders one).
+     *
+     * @param probeRef - 1x1 invisible node rendered inside the composer dock.
+     * @returns {{left: number, bottom: number, probeBottom: number|null}|null}
+     *   the clamped anchor plus the raw probe-derived number it came from.
      */
     function useDeckAnchor(probeRef) {
       const [anchor, setAnchor] = React.useState(null);
+      const logged = React.useRef(false);
       React.useEffect(() => {
         if (typeof window === 'undefined' || typeof document === 'undefined') return undefined;
+        const bottomRowOf = () => document.querySelector('[data-shell-bottom]');
         const frameOf = () => {
-          const bottomRow = document.querySelector('[data-shell-bottom]');
+          const bottomRow = bottomRowOf();
           if (bottomRow !== null) return bottomRow.parentElement;
           return document.querySelector('[data-sidebar-collapsed]');
         };
@@ -1100,16 +1158,49 @@ window.__ModuleLoader__.load({
           const frame = frameOf();
           const probe = probeRef.current;
           if (frame === null || probe === null) return;
-          const rect = frame.getBoundingClientRect();
+          const frameRect = frame.getBoundingClientRect();
           const tracks = window.getComputedStyle(frame).gridTemplateColumns || '';
           const sidebarWidth = Number.parseFloat(tracks);
-          const left = rect.left + (Number.isFinite(sidebarWidth) && sidebarWidth > 0 ? sidebarWidth : 0);
           const probeRect = probe.getBoundingClientRect();
-          // 12px of air above the composer, measured from the deck's own bottom.
-          const bottom = window.innerHeight - probeRect.top + 12;
+          const viewportWidth = window.innerWidth;
+          const viewportHeight = window.innerHeight;
+          // The bottom row is the host's own chrome (status strip when a profile
+          // renders one); its height is the floor the deck must stay above.
+          const bottomRow = bottomRowOf();
+          const chromeRect = bottomRow === null ? null : bottomRow.getBoundingClientRect();
+          const chrome = chromeRect !== null && Number.isFinite(chromeRect.height) ? chromeRect.height : 0;
+
+          const clamped = clampDeckAnchor({
+            frameLeft: frameRect.left,
+            sidebarWidth,
+            probeTop: probeRect.top,
+            probeHeight: probeRect.height,
+            chromeHeight: chrome,
+            viewportWidth,
+            viewportHeight,
+          });
+
+          if (DECK_DEBUG && !logged.current) {
+            logged.current = true;
+            console.debug('[letterbox] deck anchor', {
+              frame: { left: frameRect.left, top: frameRect.top, width: frameRect.width, height: frameRect.height },
+              sidebarTrack: sidebarWidth,
+              probe: { top: probeRect.top, height: probeRect.height },
+              bottomChrome: chrome,
+              // Both candidates on purpose: what the probe implied, and what the
+              // deck actually uses after the clamp.
+              candidates: { left: frameRect.left + (sidebarWidth > 0 ? sidebarWidth : 0) + 12, bottom: clamped.probeBottom },
+              clamped: { left: clamped.left, bottom: clamped.bottom, minBottom: clamped.minBottom, ceiling: clamped.ceiling },
+              viewport: { width: viewportWidth, height: viewportHeight },
+            });
+          }
+
           setAnchor((previous) => (previous !== null
-            && Math.abs(previous.left - left) < 0.5
-            && Math.abs(previous.bottom - bottom) < 0.5 ? previous : { left, bottom }));
+            && Math.abs(previous.left - clamped.left) < 0.5
+            && Math.abs(previous.bottom - clamped.bottom) < 0.5
+            && previous.probeBottom === clamped.probeBottom
+            ? previous
+            : { left: clamped.left, bottom: clamped.bottom, probeBottom: clamped.probeBottom }));
         };
         const schedule = () => {
           if (scheduled !== 0) return;
@@ -1311,7 +1402,9 @@ window.__ModuleLoader__.load({
         host.style.position = 'fixed';
         host.style.inset = '0';
         host.style.pointerEvents = 'none';
-        host.style.zIndex = '999';
+        // Above every in-page chrome the host draws (bottom status strips, toasts,
+        // tooltips): the deck is an overlay, not part of the column flow.
+        host.style.zIndex = '2147480000';
         document.body.appendChild(host);
         setPortalHost(host);
         return () => {
