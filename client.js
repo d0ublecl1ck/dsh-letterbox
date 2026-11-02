@@ -551,25 +551,24 @@ window.__ModuleLoader__.load({
       emptyHint: { fontSize: 12, opacity: 0.6, lineHeight: 1.5 },
 
       // ── quick-reply card deck ────────────────────────────────────────────
-      // The deck is a fixed box anchored to the sidebar's right edge; its
-      // children are absolutely positioned so a card can move between 'stacked'
-      // and 'listed' by transform alone, with no layout animation.
+      // One column, anchored to the content area's top-left corner. The deck is
+      // the list itself: it scrolls, and it owns the pointer like any other column.
       // width is the literal 340: this object is built before DECK_WIDTH exists
-      // (that constant lives with the deck logic further down) and the horizontal
-      // clamp uses DECK_WIDTH to keep the same box on screen.
-      deck: { position: 'fixed', width: 340, pointerEvents: 'none', zIndex: 998 },
-      // Card visuals only: position, height and the stack transform live in the
-      // deck's stylesheet so switching between stack and list is a class swap, not
-      // a re-render of every card.
+      // (that constant lives with the deck logic further down).
+      deck: {
+        position: 'fixed', width: 340, zIndex: 998, boxSizing: 'border-box',
+        display: 'flex', flexDirection: 'column', gap: 8,
+        overflowY: 'auto', overscrollBehavior: 'contain', pointerEvents: 'auto',
+      },
       deckCard: {
         boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 10px',
-        borderRadius: 10, pointerEvents: 'auto',
+        borderRadius: 10, flex: '0 0 auto',
         border: '1px solid var(--dsw-alias-border-secondary, rgba(0,0,0,0.12))',
         background: 'var(--dsw-alias-bg-primary, #ffffff)', color: 'inherit', fontSize: 12,
         boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
       },
       deckMeta: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, opacity: 0.62 },
-      deckText: { lineHeight: 1.45 },
+      deckText: { lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
       deckFoot: { display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap', marginTop: 'auto' },
       deckBtn: {
         fontSize: 11, padding: '2px 8px', border: 'none', borderRadius: 6,
@@ -585,46 +584,22 @@ window.__ModuleLoader__.load({
         border: '1px solid var(--dsw-alias-border-secondary, rgba(0,0,0,0.16))',
         background: 'transparent', color: 'inherit', outline: 'none',
       },
-      // Stacked: the cards are absolutely positioned inside a zero-height box, so
-      // the deck never reserves space in the conversation above the composer.
-      deckStack: { position: 'relative', height: 0 },
-      // Listed: real document flow, so every card can be as tall as its text. The
-      // 60vh cap keeps the deck off the top of the window; the overflow lives here
-      // rather than on the deck root so the scrollbar belongs to the list.
-      deckList: {
-        display: 'flex', flexDirection: 'column', gap: 8,
-        maxHeight: '60vh', overflowY: 'auto', overscrollBehavior: 'contain',
-      },
       deckMore: {
         width: '100%', padding: '6px 2px', border: 'none', background: 'transparent',
         color: 'inherit', opacity: 0.7, fontSize: 11, cursor: 'pointer', textAlign: 'left',
       },
       deckError: { fontSize: 11, color: 'var(--dsw-alias-text-warning, #b26a00)' },
-      deckBadge: {
-        position: 'absolute', right: 0, zIndex: 41, padding: '2px 8px', borderRadius: 999,
-        fontSize: 11, cursor: 'pointer', pointerEvents: 'auto',
-        border: '1px solid var(--dsw-alias-border-secondary, rgba(0,0,0,0.16))',
-        background: 'var(--dsw-alias-bg-primary, #ffffff)', color: 'inherit',
-        boxShadow: '0 2px 8px rgba(0,0,0,0.16)',
-      },
-      // DECK_DEBUG readout: final bottom / probe candidate / window height.
-      // Sits just under the deck box, in the gap the clamp keeps free.
+      // DECK_DEBUG readout: final top / list max-height / window height.
       deckDebug: {
-        position: 'absolute', left: 0, bottom: 0, transform: 'translateY(100%)',
-        padding: '1px 4px', borderRadius: 4, fontSize: 10, fontFamily: 'monospace',
-        background: 'var(--dsw-alias-bg-primary, #ffffff)', color: 'var(--dsw-alias-text-warning, #b26a00)',
-        border: '1px solid currentColor', whiteSpace: 'nowrap', pointerEvents: 'none', zIndex: 80,
+        fontSize: 10, fontFamily: 'monospace', whiteSpace: 'nowrap', pointerEvents: 'none',
+        color: 'var(--dsw-alias-text-warning, #b26a00)',
       },
       // Off-screen but still announced: the count changes, the cards never do.
       srOnly: {
         position: 'absolute', width: 1, height: 1, margin: -1, padding: 0,
         overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap', border: 0,
       },
-      // Near-zero flow node inside the composer dock: its rect is the composer's
-      // top edge, which is what the deck anchors to. It keeps a 1px box on
-      // purpose - a 0x0 node cannot be told apart from a node that was never laid
-      // out, and the anchor has to know the difference.
-      probe: { display: 'block', width: 1, height: 1, margin: 0, padding: 0, opacity: 0, pointerEvents: 'none' },
+      // One column of cards, nothing else.
 
       // ── sidebar glyph bubbles ────────────────────────────────────────────
       // The wrapper is the positioning frame; inline-flex keeps the icon the
@@ -1051,47 +1026,16 @@ window.__ModuleLoader__.load({
       );
     }
 
-    /** How many cards the deck draws once it is listed. */
+    /** How many cards the deck draws before folding the rest into one line. */
     const DECK_MAX = 8;
-    /** How many cards the stacked state keeps; the rest become one count. */
-    const DECK_STACK = 3;
-    /** Slot height of one card while stacked. */
-    const DECK_SLOT = 96;
-    /** How far each card behind the front one peeks out while stacked. */
-    const DECK_PEEK = 3;
-    /**
-     * Floor for the deck's bottom edge. 44 clears the window's bottom chrome (a
-     * status bar, an info strip) without pushing the deck up into the transcript;
-     * the measured height of the host's bottom row is added on top of it.
-     */
-    const DECK_MIN_BOTTOM = 44;
-    /** Bottom edge used when the composer probe cannot be measured at all. */
-    const DECK_FALLBACK_BOTTOM = 132;
-    /** The deck's fixed width; the horizontal clamp keeps it on screen. */
+    /** Width of the deck column; the horizontal clamp keeps it on screen. */
     const DECK_WIDTH = 340;
-    /** Flip to true to log one anchor measurement per mount (numbers, not vibes). */
+    /** Top used when the app frame cannot be measured at all. */
+    const DECK_FALLBACK_TOP = 76;
+    /** Gutter the list always leaves free at the right and bottom edges. */
+    const DECK_GUTTER = 12;
+    /** Flip to true to log one anchor measurement per mount. */
     const DECK_DEBUG = false;
-    /** Hover is a preview, not a commitment: expand after the pointer settles... */
-    const DECK_HOVER_IN_MS = 120;
-    /** ...and collapse only after it has really left. */
-    const DECK_HOVER_OUT_MS = 200;
-    /**
-     * The deck's stylesheet. It owns everything that differs between the two
-     * layouts - position, height, the stack offsets, the text clamp - so a hover
-     * only swaps a class on the container and React never re-renders a card for a
-     * visual state. The panel's big sheet is not reused: it exists only while the
-     * panel is mounted, and the deck can be up with the panel never opened.
-     */
-    const DECK_STYLE_TEXT = '@keyframes lbx-deck-fade{from{opacity:0}to{opacity:1}}'
-      + '.lbx-deck-fade{animation:lbx-deck-fade 120ms ease}'
-      + '.lbx-deck-stack .lbx-card{position:absolute;left:0;right:0;bottom:0;min-height:' + String(DECK_SLOT) + 'px;max-height:' + String(DECK_SLOT) + 'px;overflow:hidden;transition:transform 180ms ease,opacity 180ms ease}'
-      + '.lbx-deck-stack .lbx-card:nth-child(1){transform:none;opacity:1;z-index:40}'
-      + '.lbx-deck-stack .lbx-card:nth-child(2){transform:translateY(-' + String(DECK_PEEK) + 'px) scale(0.98);opacity:0.9;z-index:39}'
-      + '.lbx-deck-stack .lbx-card:nth-child(3){transform:translateY(-' + String(DECK_PEEK * 2) + 'px) scale(0.96);opacity:0.8;z-index:38}'
-      + '.lbx-deck-list .lbx-card{position:relative}'
-      + '.lbx-deck-stack .lbx-card-text{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}'
-      + '.lbx-deck-list .lbx-card-text{white-space:pre-wrap;word-break:break-word}'
-      + '@media (prefers-reduced-motion: reduce){.lbx-deck-fade{animation:none}.lbx-deck-stack .lbx-card{transition:none}}';
 
     /**
      * Clamp one deck measurement into the viewport.
@@ -1099,53 +1043,36 @@ window.__ModuleLoader__.load({
      * Pure on purpose: every input may be missing or junk - a clamp that throws is
      * worse than a clamp that picks a safe box.
      *
-     * The vertical anchor is derived from the app frame, not from the composer.
-     * The frame is the grid that owns the window (content row + bottom row), so
-     * `innerHeight - frameBottom` is the distance from the frame's lower edge to
-     * the window's, and that number is a property of the layout rather than of a
-     * component that may not have been laid out yet. The bottom row (a profile's
-     * status strip, when it renders one) sits INSIDE the frame, so the frame's
-     * bottom edge is already below it: adding `chromeHeight` once moves the deck
-     * from the frame edge up to the content edge, and it is never added twice.
-     * The composer probe is only a fallback for a frame that cannot be measured.
+     * The list hangs off the content area's top-left corner: left is the sidebar's
+     * right track plus a gutter, top is the frame's top plus the same gutter. The
+     * height is then whatever is left of the window (capped at 60% so a long list
+     * never owns the whole screen), and the list scrolls inside it.
      *
-     * @param input - frameLeft, frameBottom, frameHeight, sidebarWidth, probeTop,
-     *   probeHeight, chromeHeight, viewportWidth, viewportHeight (any may be junk).
-     * @returns {{left: number, bottom: number, probeBottom: number|null,
-     *   minBottom: number, ceiling: number, source: string, frameGap: number}}
-     *   the final box, the probe candidate it ignored or used, and the bounds.
+     * @param input - frameLeft, frameTop, frameHeight, sidebarWidth, viewportWidth,
+     *   viewportHeight (any may be junk).
+     * @returns {{left: number, top: number, maxHeight: number, source: string}}
+     *   the clamped box and which measurement it came from.
      */
     function clampDeckAnchor(input) {
       const viewportWidth = Number.isFinite(input.viewportWidth) ? input.viewportWidth : 0;
       const viewportHeight = Number.isFinite(input.viewportHeight) ? input.viewportHeight : 0;
       const frameLeft = Number.isFinite(input.frameLeft) ? input.frameLeft : 0;
       const sidebarWidth = Number.isFinite(input.sidebarWidth) && input.sidebarWidth > 0 ? input.sidebarWidth : 0;
-      const chromeHeight = Number.isFinite(input.chromeHeight) && input.chromeHeight > 0 ? input.chromeHeight : 0;
-      const probeHeight = Number.isFinite(input.probeHeight) ? input.probeHeight : 0;
 
-      const rawLeft = frameLeft + sidebarWidth + 12;
-      const left = Math.max(12, Math.min(rawLeft, viewportWidth - 12 - DECK_WIDTH));
+      const rawLeft = frameLeft + sidebarWidth + DECK_GUTTER;
+      const left = Math.max(DECK_GUTTER, Math.min(rawLeft, viewportWidth - DECK_GUTTER - DECK_WIDTH));
 
-      const minBottom = Math.max(DECK_MIN_BOTTOM, chromeHeight + 12);
-      const ceiling = Math.max(viewportHeight * 0.6, minBottom);
-
-      const frameUsable = Number.isFinite(input.frameBottom) && Number.isFinite(input.frameHeight) && input.frameHeight > 0;
-      const frameGap = frameUsable ? Math.max(0, viewportHeight - input.frameBottom) : 0;
-      const fromFrame = frameGap + chromeHeight + 12;
-
-      const probeUsable = Number.isFinite(input.probeTop) && probeHeight > 0 && input.probeTop < viewportHeight;
-      const probeBottom = probeUsable ? viewportHeight - input.probeTop + 12 : null;
-
-      const rawBottom = frameUsable
-        ? fromFrame
-        : (probeBottom === null ? DECK_FALLBACK_BOTTOM : probeBottom);
-      const bottom = Math.min(Math.max(rawBottom, minBottom), ceiling);
-      const source = frameUsable ? 'frame' : (probeBottom === null ? 'fallback' : 'probe');
-      return { left, bottom, probeBottom, minBottom, ceiling, source, frameGap };
+      const frameUsable = Number.isFinite(input.frameTop) && Number.isFinite(input.frameHeight) && input.frameHeight > 0;
+      const rawTop = (frameUsable ? input.frameTop : DECK_FALLBACK_TOP) + DECK_GUTTER;
+      // Leave at least 120px of list on screen before giving up on the anchor.
+      const lowestTop = Math.max(DECK_GUTTER, viewportHeight - DECK_GUTTER - 120);
+      const top = Math.max(DECK_GUTTER, Math.min(rawTop, lowestTop));
+      const maxHeight = Math.max(0, Math.min(viewportHeight * 0.6, viewportHeight - top - DECK_GUTTER));
+      return { left, top, maxHeight, source: frameUsable ? 'frame' : 'fallback' };
     }
 
     /**
-     * Where the deck lives: the sidebar's right edge and the composer's top.
+     * Where the list lives: the content area's top-left corner.
      *
      * The three-column grid belongs to the app frame, so the sidebar width is the
      * frame's first grid track - read from its computed grid-template-columns,
@@ -1156,80 +1083,54 @@ window.__ModuleLoader__.load({
      *
      * Measured on mount and then only when something real changes: frame resize,
      * a frame attribute/style rewrite (collapsing the sidebar rewrites the grid
-     * inline style), dock resize and window resize. One animation frame coalesces
-     * a burst of notifications into one read - never one read per frame.
+     * inline style) and window resize. One animation frame coalesces a burst of
+     * notifications into one read - never one read per frame.
      *
-     * Both axes are clamped, because a measurement is only evidence: the probe
-     * can report a rect before the composer is laid out, or after the window has
-     * been resized under it, and an unclamped result parks the deck half off
-     * screen. The bottom also clears the host's own bottom row (the pipeline
-     * shell's status strip, when a profile renders one).
-     *
-     * @param probeRef - 1x1 invisible node rendered inside the composer dock.
-     * @returns {{left: number, bottom: number, probeBottom: number|null}|null}
-     *   the clamped anchor plus the raw probe-derived number it came from.
+     * @returns {{left: number, top: number, maxHeight: number, source: string}|null}
+     *   the clamped box, or null until the first measurement.
      */
-    function useDeckAnchor(probeRef) {
+    function useDeckAnchor() {
       const [anchor, setAnchor] = React.useState(null);
       const logged = React.useRef(false);
       React.useEffect(() => {
         if (typeof window === 'undefined' || typeof document === 'undefined') return undefined;
-        const bottomRowOf = () => document.querySelector('[data-shell-bottom]');
         const frameOf = () => {
-          const bottomRow = bottomRowOf();
+          const bottomRow = document.querySelector('[data-shell-bottom]');
           if (bottomRow !== null) return bottomRow.parentElement;
           return document.querySelector('[data-sidebar-collapsed]');
         };
         let scheduled = 0;
         const measure = () => {
           const frame = frameOf();
-          const probe = probeRef.current;
-          if (frame === null || probe === null) return;
+          if (frame === null) return;
           const frameRect = frame.getBoundingClientRect();
           const tracks = window.getComputedStyle(frame).gridTemplateColumns || '';
           const sidebarWidth = Number.parseFloat(tracks);
-          const probeRect = probe.getBoundingClientRect();
           const viewportWidth = window.innerWidth;
           const viewportHeight = window.innerHeight;
-          // The bottom row is the host's own chrome (status strip when a profile
-          // renders one); its height is the floor the deck must stay above.
-          const bottomRow = bottomRowOf();
-          const chromeRect = bottomRow === null ? null : bottomRow.getBoundingClientRect();
-          const chrome = chromeRect !== null && Number.isFinite(chromeRect.height) ? chromeRect.height : 0;
-
           const clamped = clampDeckAnchor({
             frameLeft: frameRect.left,
-            frameBottom: frameRect.bottom,
+            frameTop: frameRect.top,
             frameHeight: frameRect.height,
             sidebarWidth,
-            probeTop: probeRect.top,
-            probeHeight: probeRect.height,
-            chromeHeight: chrome,
             viewportWidth,
             viewportHeight,
           });
-
           if (DECK_DEBUG && !logged.current) {
             logged.current = true;
             console.debug('[letterbox] deck anchor', {
               frame: { left: frameRect.left, top: frameRect.top, width: frameRect.width, height: frameRect.height },
               sidebarTrack: sidebarWidth,
-              probe: { top: probeRect.top, height: probeRect.height },
-              bottomChrome: chrome,
-              // Both candidates on purpose: what the frame derives, what the probe
-              // would have said, and which one won.
-              candidates: { fromFrame: clamped.frameGap + chrome + 12, fromProbe: clamped.probeBottom },
-              clamped: { left: clamped.left, bottom: clamped.bottom, minBottom: clamped.minBottom, ceiling: clamped.ceiling, source: clamped.source },
+              clamped: { left: clamped.left, top: clamped.top, maxHeight: clamped.maxHeight, source: clamped.source },
               viewport: { width: viewportWidth, height: viewportHeight },
             });
           }
-
           setAnchor((previous) => (previous !== null
             && Math.abs(previous.left - clamped.left) < 0.5
-            && Math.abs(previous.bottom - clamped.bottom) < 0.5
-            && previous.probeBottom === clamped.probeBottom
+            && Math.abs(previous.top - clamped.top) < 0.5
+            && Math.abs(previous.maxHeight - clamped.maxHeight) < 0.5
             ? previous
-            : { left: clamped.left, bottom: clamped.bottom, probeBottom: clamped.probeBottom, source: clamped.source }));
+            : { left: clamped.left, top: clamped.top, maxHeight: clamped.maxHeight, source: clamped.source }));
         };
         const schedule = () => {
           if (scheduled !== 0) return;
@@ -1241,10 +1142,7 @@ window.__ModuleLoader__.load({
         const frame = frameOf();
         schedule();
         const resized = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null;
-        if (resized !== null) {
-          if (frame !== null) resized.observe(frame);
-          if (probeRef.current !== null) resized.observe(probeRef.current);
-        }
+        if (resized !== null && frame !== null) resized.observe(frame);
         const mutated = typeof MutationObserver === 'function' && frame !== null ? new MutationObserver(schedule) : null;
         if (mutated !== null) {
           mutated.observe(frame, {
@@ -1259,7 +1157,7 @@ window.__ModuleLoader__.load({
           if (mutated !== null) mutated.disconnect();
           window.removeEventListener('resize', schedule);
         };
-      }, [probeRef]);
+      }, []);
       return anchor;
     }
 
@@ -1267,16 +1165,14 @@ window.__ModuleLoader__.load({
     const NO_OPTIONS = [];
 
     /**
-     * One card in the deck.
+     * One card in the list.
      *
-     * Memoised on primitive props: hovering only swaps a class on the container,
-     * so the cards must not re-render for it. Everything the two layouts disagree
-     * about (position, height, stack offset, text clamp) is CSS keyed off the
-     * container (`.lbx-deck-stack` / `.lbx-deck-list`), which is why this
-     * component takes no layout props at all.
+     * Memoised on primitive props: a scroll or a sibling's update must not rebuild
+     * every card. It is a plain block in flow - the list owns the layout - so it
+     * takes no layout props at all, and the text is never clamped.
      */
     const DeckCard = React.memo(function DeckCard(props) {
-      const { id, text, kind, priority, createdAt, options, busy, locked, replyOpen, onRead, onReply, onAnswer, onSend, onPin, onToggle } = props;
+      const { id, text, kind, priority, createdAt, options, busy, locked, replyOpen, onRead, onReply, onAnswer, onSend } = props;
       const dim = locked && !busy ? 0.5 : 1;
       const meta = kindLabel(kind) + (priority === 'high' ? ' · 高' : '') + ' · ' + formatClock(createdAt);
       const stop = (event) => {
@@ -1312,26 +1208,9 @@ window.__ModuleLoader__.load({
           button('回复', () => onReply(id)),
         );
 
-      return h('div', {
-        className: 'lbx-card',
-        style: styles.deckCard,
-        'data-card': id,
-        // The body is focusable on purpose: touch and keyboard have no hover, so
-        // Enter / Space is their way into the list.
-        tabIndex: 0,
-        role: 'button',
-        onClick: (event) => {
-          stop(event);
-          onPin();
-        },
-        onKeyDown: (event) => {
-          if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return;
-          event.preventDefault();
-          onToggle();
-        },
-      },
+      return h('div', { style: styles.deckCard, 'data-card': id },
         h('div', { style: styles.deckMeta }, meta),
-        h('div', { className: 'lbx-card-text', style: styles.deckText }, text),
+        h('div', { style: styles.deckText }, text),
         foot,
       );
     });
@@ -1382,42 +1261,30 @@ window.__ModuleLoader__.load({
     });
 
     /**
-     * The quick-reply deck, mounted in the composer dock.
+     * The quick-reply list, mounted in the composer dock and drawn top-down in the
+     * content area's top-left corner.
      *
-     * Every unread note of this Session stays on screen as a card until the human
-     * acts on it: nothing here times out. One note is drawn whole, two form a
-     * light stack, three or more stack three deep and fold the rest into a count.
-     * A pointer that settles on the deck previews the list; a click, a Tab into it
-     * or starting a reply pins that list open. Esc or a tap outside lets it go.
+     * Every unread note of this Session stays in the list until the human acts on
+     * it: nothing here times out. At most DECK_MAX cards are drawn; the rest fold
+     * into one line that opens the inbox. Everything the human clicks is
+     * optimistic - the card leaves at once and only comes back if the host refuses
+     * the write.
      *
-     * Everything the human clicks is optimistic: the card leaves at once and only
-     * comes back if the host refuses the write, so no action ever looks ignored
-     * while a request is in flight.
-     *
-     * Performance rules: one poll (the existing useLedger, now deduped), no
-     * standing timers - the two hover delays live only between a pointer event and
-     * its effect and are cleared on unmount - at most DECK_MAX cards, memoised
-     * cards, and no per-hover style building. Nothing plays under reduced motion.
+     * Performance rules: one poll (the existing useLedger, deduped), no timers at
+     * all, at most DECK_MAX memoised cards, and a fixed style object per card.
      */
     function CardDeck({ sessions, layout }) {
       const sessionId = useSessionId(sessions);
       const ledger = useLedger(sessionId, 'session', true);
-      const probeRef = React.useRef(null);
       const deckRef = React.useRef(null);
-      const anchor = useDeckAnchor(probeRef);
+      const anchor = useDeckAnchor();
       const [portalHost, setPortalHost] = React.useState(null);
-      const [hovered, setHovered] = React.useState(false);
-      // Pinned = the list stays open regardless of the pointer: set by a click, a
-      // Tab into the deck, or starting a reply; cleared by Esc or a tap outside.
-      const [pinned, setPinned] = React.useState(false);
       const [replyId, setReplyId] = React.useState(null);
       const [busyId, setBusyId] = React.useState(null);
       const [doneIds, setDoneIds] = React.useState([]);
       const [error, setError] = React.useState(null);
       const [reduced, setReduced] = React.useState(false);
       const [announcement, setAnnouncement] = React.useState('');
-      const enterTimer = React.useRef(0);
-      const leaveTimer = React.useRef(0);
       const restoreFocus = React.useRef(false);
 
       // The deck is portalled to <body>: inside the composer subtree a transformed
@@ -1444,15 +1311,6 @@ window.__ModuleLoader__.load({
       }, []);
 
       React.useEffect(() => {
-        if (typeof document === 'undefined' || document.head === null || typeof document.createElement !== 'function') return undefined;
-        const sheet = document.createElement('style');
-        sheet.setAttribute('data-letterbox-deck-styles', 'true');
-        sheet.textContent = DECK_STYLE_TEXT;
-        document.head.appendChild(sheet);
-        return () => { if (sheet.parentNode !== null) sheet.parentNode.removeChild(sheet); };
-      }, []);
-
-      React.useEffect(() => {
         if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined;
         const query = window.matchMedia('(prefers-reduced-motion: reduce)');
         const sync = () => setReduced(query.matches === true);
@@ -1462,18 +1320,13 @@ window.__ModuleLoader__.load({
         return () => query.removeEventListener('change', sync);
       }, []);
 
-      // A card leaves the deck when the ledger says it is read, or immediately
+      // A card leaves the list when the ledger says it is read, or immediately
       // after a successful answer - waiting for the next poll would leave a card
       // the human already answered sitting on screen for five seconds.
       const unread = ledger.items.filter((item) => !item.read && doneIds.indexOf(item.id) === -1);
       const total = unread.length;
       const shown = unread.slice(0, DECK_MAX);
       const rest = total - shown.length;
-      const listed = hovered || pinned;
-      // One note has nothing to stack against, so it is always drawn whole.
-      const flow = listed || total === 1;
-      const stacked = unread.slice(0, DECK_STACK);
-      const badgeCount = flow ? 0 : total - stacked.length;
 
       // Screen readers hear one sentence per count change, never one per card.
       const announced = React.useRef(null);
@@ -1488,17 +1341,10 @@ window.__ModuleLoader__.load({
           : (total > previous ? '新增 ' + String(total - previous) + ' 条未读' : '共 ' + String(total) + ' 条未读'));
       }, [total]);
 
-      // Answering the last card unmounts the deck, and a pointerleave that never
-      // happens would leave 'hovered' or 'pinned' behind: the next card would then
-      // appear already listed. Drop every pointer-driven state when the ids change.
       const shownKey = shown.map((item) => item.id).join(',');
       React.useEffect(() => {
         const ids = shownKey === '' ? [] : shownKey.split(',');
         if (replyId !== null && ids.indexOf(replyId) === -1) setReplyId(null);
-        if (ids.length === 0) {
-          setHovered(false);
-          setPinned(false);
-        }
       }, [shownKey, replyId]);
 
       // Dismissing the last card removes the node the human was standing on. If it
@@ -1514,62 +1360,6 @@ window.__ModuleLoader__.load({
         }
         wasShown.current = visible;
       }, [shown.length]);
-
-      // Outside tap and Esc are only listened for while the list is pinned; the
-      // listeners come off with the pin.
-      React.useEffect(() => {
-        if (!pinned || typeof document === 'undefined') return undefined;
-        const onDown = (event) => {
-          const root = deckRef.current;
-          if (root !== null && event.target !== null && root.contains(event.target)) return;
-          setPinned(false);
-          setHovered(false);
-        };
-        const onKey = (event) => {
-          if (event.key !== 'Escape') return;
-          setPinned(false);
-          setHovered(false);
-        };
-        document.addEventListener('pointerdown', onDown, true);
-        document.addEventListener('keydown', onKey);
-        return () => {
-          document.removeEventListener('pointerdown', onDown, true);
-          document.removeEventListener('keydown', onKey);
-        };
-      }, [pinned]);
-
-      React.useEffect(() => () => {
-        if (enterTimer.current !== 0) window.clearTimeout(enterTimer.current);
-        if (leaveTimer.current !== 0) window.clearTimeout(leaveTimer.current);
-      }, []);
-
-      const clearTimer = (ref) => {
-        if (ref.current === 0) return;
-        window.clearTimeout(ref.current);
-        ref.current = 0;
-      };
-
-      // Hovering is a preview, not a commitment: expand only after the pointer has
-      // settled, and collapse only after it has really left.
-      const onPointerEnter = () => {
-        clearTimer(leaveTimer);
-        if (listed || total < 2) return;
-        clearTimer(enterTimer);
-        enterTimer.current = window.setTimeout(() => {
-          enterTimer.current = 0;
-          setHovered(true);
-        }, DECK_HOVER_IN_MS);
-      };
-
-      const onPointerLeave = () => {
-        clearTimer(enterTimer);
-        if (pinned) return;
-        clearTimer(leaveTimer);
-        leaveTimer.current = window.setTimeout(() => {
-          leaveTimer.current = 0;
-          setHovered(false);
-        }, DECK_HOVER_OUT_MS);
-      };
 
       // Remember whether the human was standing on the deck before it disappears.
       const noteFocus = React.useCallback(() => {
@@ -1605,12 +1395,7 @@ window.__ModuleLoader__.load({
 
       const onAnswer = React.useCallback((id, choice) => answer(id, { choice }), [answer]);
       const onSend = React.useCallback((id, note) => answer(id, { note }), [answer]);
-      const onReply = React.useCallback((id) => {
-        setReplyId(id);
-        setPinned(true);
-      }, []);
-      const onPin = React.useCallback(() => setPinned(true), []);
-      const onToggle = React.useCallback(() => setPinned((value) => !value), []);
+      const onReply = React.useCallback((id) => setReplyId(id), []);
 
       const openInbox = () => {
         try {
@@ -1620,7 +1405,7 @@ window.__ModuleLoader__.load({
         }
       };
 
-      const cards = (flow ? shown : stacked).map((item) => h(DeckCard, {
+      const cards = shown.map((item) => h(DeckCard, {
         key: item.id,
         id: item.id,
         text: item.text,
@@ -1635,66 +1420,37 @@ window.__ModuleLoader__.load({
         onReply,
         onAnswer,
         onSend,
-        onPin,
-        onToggle,
       }));
 
-      const probe = h('span', { ref: probeRef, style: styles.probe, 'aria-hidden': true });
       const live = h('div', { role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true', style: styles.srOnly }, announcement);
       const deck = anchor === null || portalHost === null || total === 0 ? null : ReactDOM.createPortal(h('div', {
         ref: deckRef,
         style: {
           ...styles.deck,
-          // clampDeckAnchor already added the 12px gutter; adding it again here
-          // pushed the deck 12px to the right of where it was measured.
+          // clampDeckAnchor already added the gutter on both axes.
           left: anchor.left,
-          bottom: anchor.bottom,
-          // Only a pinned deck owns the pointer: an always-on transparent
-          // rectangle over the conversation would swallow clicks that were never
-          // meant for the deck.
-          pointerEvents: pinned ? 'auto' : 'none',
+          top: anchor.top,
+          maxHeight: anchor.maxHeight,
+          transition: reduced ? 'none' : 'max-height 120ms ease',
         },
-        onPointerEnter,
-        onPointerLeave,
-        onFocus: () => setPinned(true),
       },
         DECK_DEBUG ? h('div', { style: styles.deckDebug },
-          String(Math.round(anchor.bottom)) + ' / '
-          + (anchor.probeBottom === null ? 'n/a' : String(Math.round(anchor.probeBottom))) + ' / '
+          String(Math.round(anchor.top)) + ' / '
+          + String(Math.round(anchor.maxHeight)) + ' / '
           + String(Math.round(typeof window === 'undefined' ? 0 : window.innerHeight))) : null,
-        flow
-          ? h('div', {
-            className: listed && !reduced ? 'lbx-deck-fade' : undefined,
-            style: styles.deckList,
-          },
-            cards,
-            rest > 0 ? h('button', {
-              type: 'button',
-              className: 'lbx-ghost',
-              style: styles.deckMore,
-              onClick: openInbox,
-            }, '还有 ' + String(rest) + ' 条') : null,
-            error === null ? null : h('div', { style: styles.deckError }, error),
-          )
-          : h('div', { style: styles.deckStack },
-            cards,
-            error === null ? null : h('div', {
-              style: { ...styles.deckError, position: 'absolute', left: 0, bottom: DECK_SLOT + 6 },
-            }, error),
-            badgeCount > 0 ? h('button', {
-              type: 'button',
-              className: 'lbx-ghost',
-              style: { ...styles.deckBadge, bottom: DECK_SLOT + DECK_PEEK * Math.max(stacked.length - 1, 0) + 6 },
-              onClick: (event) => {
-                if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-                openInbox();
-              },
-            }, '还有 ' + String(badgeCount) + ' 条') : null,
-          ),
+        cards,
+        rest > 0 ? h('button', {
+          type: 'button',
+          className: 'lbx-ghost',
+          style: styles.deckMore,
+          onClick: openInbox,
+        }, '还有 ' + String(rest) + ' 条') : null,
+        error === null ? null : h('div', { style: styles.deckError }, error),
       ), portalHost);
 
-      return h(React.Fragment, null, probe, live, deck);
+      return h(React.Fragment, null, live, deck);
     }
+
 
     return {
       inject: ['slots', 'sessions', 'layout'],
